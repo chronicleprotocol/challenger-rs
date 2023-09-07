@@ -1,0 +1,140 @@
+//  Copyright (C) 2021-2023 Chronicle Labs, Inc.
+//
+//  This program is free software: you can redistribute it and/or modify
+//  it under the terms of the GNU Affero General Public License as
+//  published by the Free Software Foundation, either version 3 of the
+//  License, or (at your option) any later version.
+//
+//  This program is distributed in the hope that it will be useful,
+//  but WITHOUT ANY WARRANTY; without even the implied warranty of
+//  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+//  GNU Affero General Public License for more details.
+//
+//  You should have received a copy of the GNU Affero General Public License
+//  along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+use clap::Parser;
+use env_logger::Env;
+use ethers::{
+    core::types::Address,
+    prelude::SignerMiddleware,
+    providers::{Http, Middleware, Provider},
+    signers::Signer,
+};
+use eyre::Result;
+use log::{debug, info};
+use std::sync::Arc;
+
+mod challenger;
+mod wallet;
+use challenger::Challenger;
+use tokio::sync::mpsc::channel;
+use wallet::CustomWallet;
+
+#[derive(Parser, Debug)]
+#[command(author, version, about)]
+/// Challenger searches for `opPoked` events for `ScribeOptimistic` contract.
+/// Verifies poke schnorr signature and challenges it, if it's invalid.
+struct Cli {
+    #[arg(
+        short = 'a',
+        long,
+        help = "ScribeOptimistic contract addresses. Example: `0x891E368fE81cBa2aC6F6cc4b98e684c106e2EF4f`"
+    )]
+    addresses: Vec<String>,
+    #[arg(long, help = "Node HTTP RPC_URL, normally starts with https://****")]
+    rpc_url: String,
+    #[arg(
+        long,
+        help = "Private key in format `0x******` or `*******`. If provided, no need to use --keystore"
+    )]
+    secret_key: Option<String>,
+    #[arg(
+        long,
+        env = "ETH_KEYSTORE",
+        help = "Keystore file (NOT FOLDER), path to key .json file. If provided, no need to use --secret-key"
+    )]
+    keystore: Option<String>,
+    #[arg(long, requires = "keystore", help = "Key raw password as text")]
+    password: Option<String>,
+    #[arg(
+        long,
+        requires = "keystore",
+        env = "ETH_PASSWORD",
+        help = "Path to key password file"
+    )]
+    password_file: Option<String>,
+    #[arg(
+        long,
+        help = "If no chain_id provided binary will try to get chain_id from given RPC"
+    )]
+    chain_id: Option<u64>,
+}
+
+impl CustomWallet for Cli {
+    fn secret_key(&self) -> Option<String> {
+        self.secret_key.clone()
+    }
+
+    fn keystore(&self) -> Option<String> {
+        self.keystore.clone()
+    }
+
+    fn password(&self) -> Option<String> {
+        self.password.clone()
+    }
+
+    fn password_file(&self) -> Option<String> {
+        self.password_file.clone()
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    // Setting default log level to info
+    env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
+
+    let args = Cli::parse();
+
+    let provider = Provider::<Http>::try_from(args.rpc_url.as_str())?;
+
+    let chain_id = args
+        .chain_id
+        .unwrap_or(provider.get_chainid().await?.as_u64());
+
+    // Generating signer from given private key
+    let signer = args.wallet()?.unwrap().with_chain_id(chain_id);
+
+    debug!(
+        "Using {:?} for signing and chain_id {:?}",
+        signer.address(),
+        signer.chain_id()
+    );
+
+    let client = Arc::new(SignerMiddleware::new(provider, signer));
+
+    let (send, mut recv) = channel(1);
+
+    for address in &args.addresses {
+        let address = address.parse::<Address>()?;
+
+        let cloned_client = client.clone();
+        let c_send = send.clone();
+        tokio::spawn(async move {
+            info!("Address {:?} starting monitoring opPokes", address);
+
+            let mut challenger = Challenger::new(address, cloned_client);
+
+            challenger.start(c_send).await
+        });
+    }
+
+    // Wait for the tasks to finish.
+    //
+    // We drop our sender first because the recv() call otherwise
+    // sleeps forever.
+    drop(send);
+
+    let _ = recv.recv().await;
+    Ok(())
+}

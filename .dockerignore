@@ -1,0 +1,7 @@
+.*
+*.md
+Dockerfile
+Dockerfile-*
+docker-compose.yaml
+target
+.github
