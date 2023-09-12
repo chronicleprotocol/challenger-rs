@@ -29,7 +29,7 @@ mod challenger;
 mod wallet;
 use challenger::Challenger;
 use tokio::sync::mpsc::channel;
-use wallet::CustomWallet;
+use wallet::{CustomWallet, KeystoreWallet, PrivateKeyWallet};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
@@ -71,11 +71,13 @@ struct Cli {
     chain_id: Option<u64>,
 }
 
-impl CustomWallet for Cli {
-    fn secret_key(&self) -> Option<String> {
+impl PrivateKeyWallet for Cli {
+    fn private_key(&self) -> Option<String> {
         self.secret_key.clone()
     }
+}
 
+impl KeystoreWallet for Cli {
     fn keystore(&self) -> Option<String> {
         self.keystore.clone()
     }
@@ -88,6 +90,8 @@ impl CustomWallet for Cli {
         self.password_file.clone()
     }
 }
+
+impl CustomWallet for Cli {}
 
 #[tokio::main]
 async fn main() -> Result<()> {

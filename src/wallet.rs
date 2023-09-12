@@ -20,27 +20,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub trait CustomWallet {
-    fn secret_key(&self) -> Option<String>;
-
-    fn keystore(&self) -> Option<String>;
-
-    fn password(&self) -> Option<String>;
-
-    fn password_file(&self) -> Option<String>;
-
-    /// Generates wallet for future sign
-    fn wallet(&self) -> Result<Option<LocalWallet>> {
-        match (&self.secret_key(), &self.keystore()) {
-            (Some(secret), _) => self.get_from_private_key(secret),
-            (_, Some(key)) => self.get_from_keystore(
-                Some(key),
-                self.password().as_ref(),
-                self.password_file().as_ref(),
-            ),
-            (_, _) => bail!("Please provide private key or keystore"),
-        }
-    }
+pub trait PrivateKeyWallet {
+    fn private_key(&self) -> Option<String>;
 
     #[track_caller]
     fn get_from_private_key(&self, private_key: &str) -> Result<Option<LocalWallet>> {
@@ -50,6 +31,14 @@ pub trait CustomWallet {
             Err(err) => bail!("Failed to parse private key: {:?}", err),
         }
     }
+}
+
+pub trait KeystoreWallet {
+    fn keystore(&self) -> Option<String>;
+
+    fn password(&self) -> Option<String>;
+
+    fn password_file(&self) -> Option<String>;
 
     /// Ensures the path to the keystore exists.
     ///
@@ -108,5 +97,39 @@ pub trait CustomWallet {
                 (None, _, _) => None,
             },
         )
+    }
+}
+
+pub trait CustomWallet: PrivateKeyWallet + KeystoreWallet {
+    /// Generates wallet for future sign
+    fn wallet(&self) -> Result<Option<LocalWallet>> {
+        match (&self.private_key(), &self.keystore()) {
+            (Some(secret), _) => self.get_from_private_key(secret),
+            (_, Some(key)) => self.get_from_keystore(
+                Some(key),
+                self.password().as_ref(),
+                self.password_file().as_ref(),
+            ),
+            (_, _) => bail!("Please provide private key or keystore"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builds_wallet_from_private_key() {
+        // let wallet =
+        //     "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string();
+        // let wallet = wallet.wallet().unwrap().unwrap();
+        // assert_eq!(
+        //     wallet.address(),
+        //     "0x5Fb17fBcC2C19bC4d8B2Fb2542b520BDB7bE360a"
+        //         .parse::<LocalWallet>()
+        //         .unwrap()
+        //         .address()
+        // );
     }
 }
