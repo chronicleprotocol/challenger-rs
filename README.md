@@ -67,5 +67,5 @@ Options:
 ```
 
 ```bash
-docker run --it --rm --name challenger -e RUST_LOG=debug challenger -a ADDRESS -a ADDRESS2 --rpc-url http://localhost:3334 --secret-key asdfasdfas
+docker run --it --rm --name challenger -e RUST_LOG=debug -a ADDRESS -a ADDRESS2 --rpc-url http://localhost:3334 --secret-key asdfasdfas
 ```
