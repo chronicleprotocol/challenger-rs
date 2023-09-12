@@ -114,22 +114,3 @@ pub trait CustomWallet: PrivateKeyWallet + KeystoreWallet {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn builds_wallet_from_private_key() {
-        // let wallet =
-        //     "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string();
-        // let wallet = wallet.wallet().unwrap().unwrap();
-        // assert_eq!(
-        //     wallet.address(),
-        //     "0x5Fb17fBcC2C19bC4d8B2Fb2542b520BDB7bE360a"
-        //         .parse::<LocalWallet>()
-        //         .unwrap()
-        //         .address()
-        // );
-    }
-}

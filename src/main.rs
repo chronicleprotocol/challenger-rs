@@ -23,7 +23,7 @@ use ethers::{
 };
 use eyre::Result;
 use log::{debug, info};
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
 mod challenger;
 mod wallet;
@@ -141,4 +141,103 @@ async fn main() -> Result<()> {
 
     let _ = recv.recv().await;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builds_wallet_from_private_key() {
+        let cli = Cli {
+            addresses: vec![],
+            secret_key: Some(
+                "def90b5b5cb2d68c5cd9de7b3e6d767cbb1b8d5fd8560bd6c42cbc4a4da30b16".to_string(),
+            ),
+            chain_id: None,
+            keystore: None,
+            password: None,
+            password_file: None,
+            rpc_url: "http://localhost:8545".to_string(),
+        };
+
+        let wallet = cli.wallet().unwrap().unwrap();
+
+        assert_eq!(
+            wallet.address(),
+            "91543660a715018cb35918add3085d08d7194724".parse().unwrap()
+        );
+
+        // Works with `0x` prefix
+        let cli = Cli {
+            addresses: vec![],
+            secret_key: Some(
+                "0xdef90b5b5cb2d68c5cd9de7b3e6d767cbb1b8d5fd8560bd6c42cbc4a4da30b16".to_string(),
+            ),
+            chain_id: None,
+            keystore: None,
+            password: None,
+            password_file: None,
+            rpc_url: "http://localhost:8545".to_string(),
+        };
+
+        let wallet = cli.wallet().unwrap().unwrap();
+
+        assert_eq!(
+            wallet.address(),
+            "91543660a715018cb35918add3085d08d7194724".parse().unwrap()
+        );
+    }
+
+    #[test]
+    fn keystore_works_with_password_in_file() {
+        let keystore = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/keystore");
+        let keystore_file = keystore
+            .join("UTC--2022-12-20T10-30-43.591916000Z--ec554aeafe75601aaab43bd4621a22284db566c2");
+
+        let keystore_password_file = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/keystore/password")
+            .into_os_string();
+
+        let cli = Cli {
+            addresses: vec![],
+            secret_key: None,
+            chain_id: None,
+            keystore: Some(keystore_file.to_str().unwrap().to_string()),
+            password: None,
+            password_file: Some(keystore_password_file.into_string().unwrap()),
+            rpc_url: "http://localhost:8545".to_string(),
+        };
+
+        let wallet = cli.wallet().unwrap().unwrap();
+
+        assert_eq!(
+            wallet.address(),
+            "ec554aeafe75601aaab43bd4621a22284db566c2".parse().unwrap()
+        );
+    }
+
+    #[test]
+    fn keystore_works_with_raw_password() {
+        let keystore = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/keystore");
+        let keystore_file = keystore
+            .join("UTC--2022-12-20T10-30-43.591916000Z--ec554aeafe75601aaab43bd4621a22284db566c2");
+
+        let cli = Cli {
+            addresses: vec![],
+            secret_key: None,
+            chain_id: None,
+            keystore: Some(keystore_file.to_str().unwrap().to_string()),
+            password: Some("keystorepassword".to_string()),
+            password_file: None,
+            rpc_url: "http://localhost:8545".to_string(),
+        };
+
+        let wallet = cli.wallet().unwrap().unwrap();
+
+        assert_eq!(
+            wallet.address(),
+            "ec554aeafe75601aaab43bd4621a22284db566c2".parse().unwrap()
+        );
+    }
 }
