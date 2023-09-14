@@ -23,7 +23,7 @@ use ethers::{
 };
 use eyre::Result;
 use log::{debug, info};
-use std::{path::PathBuf, sync::Arc};
+use std::sync::Arc;
 
 mod challenger;
 mod wallet;

@@ -85,7 +85,7 @@ where
         Ok(event.query_with_meta().await?)
     }
 
-    // Check if given block_number for log is still challengeable
+    // Check if given block_number for log is already non challengeable
     async fn is_challengeable(
         &self,
         block_number: U64,
@@ -95,7 +95,7 @@ where
         let block = self.client.get_block(block_number).await?.unwrap();
         let diff = Utc::now().timestamp() as u64 - block.timestamp.as_u64();
 
-        Ok(diff as u16 > challenge_period_in_sec)
+        Ok(challenge_period_in_sec > diff as u16)
     }
 
     // TODO: Need tests
@@ -198,7 +198,7 @@ where
                 .is_challengeable(meta.block_number, challenge_period_in_sec)
                 .await?;
 
-            if challengeable {
+            if !challengeable {
                 error!(
                     "Address {:?}, block is to old for `opChallenge` block number: {:?}",
                     self.address, meta.block_number
@@ -227,14 +227,7 @@ where
 
             if !valid {
                 // TODO: handle error gracefully, we should go further even if error happened
-                match self
-                    .challenge(
-                        meta.block_number,
-                        challenge_period_in_sec,
-                        schnorr_data.clone(),
-                    )
-                    .await
-                {
+                match self.challenge(schnorr_data.clone()).await {
                     Ok(receipt) => {
                         info!(
                             "Address {:?}, successfully sent `opChallenge` transaction {:?}",
@@ -253,26 +246,7 @@ where
         Ok(())
     }
 
-    async fn challenge(
-        &self,
-        block_number: U64,
-        max_diff_time: u16,
-        schnorr_data: SchnorrData,
-    ) -> Result<()> {
-        let block = self.client.get_block(block_number).await?.unwrap();
-
-        let diff = Utc::now().timestamp() as u64 - block.timestamp.as_u64();
-
-        if diff as u16 > max_diff_time {
-            eyre::bail!(
-                "Address {:?}, block is to old for `opChallenge` block number: {:?} time diff {:?}s",
-                self.address,
-                block_number,
-                diff
-            )
-        }
-        // TODO: Check time from block generation. it shouldn't be more than 10 mins
-
+    async fn challenge(&self, schnorr_data: SchnorrData) -> Result<()> {
         info!(
             "Address {:?}, Calling opChallenge for {:?}",
             self.address, schnorr_data
