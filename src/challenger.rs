@@ -18,6 +18,7 @@ use ethers::{
     contract::{abigen, Contract, LogMeta},
     core::types::{Address, ValueOrArray, U64},
     providers::Middleware,
+    types::BlockNumber,
 };
 use eyre::Result;
 use log::{debug, error, info};
@@ -80,7 +81,8 @@ where
         let event =
             Contract::event_of_type::<OpPokeChallengedSuccessfullyFilter>(self.client.clone())
                 .address(ValueOrArray::Array(vec![self.address]))
-                .from_block(from_block);
+                .from_block(from_block)
+                .to_block(BlockNumber::Latest);
 
         Ok(event.query_with_meta().await?)
     }
@@ -179,7 +181,8 @@ where
         // Fetches `OpPoked` events
         let event = Contract::event_of_type::<OpPokedFilter>(self.client.clone())
             .address(ValueOrArray::Array(vec![self.address]))
-            .from_block(from_block);
+            .from_block(from_block)
+            .to_block(BlockNumber::Latest);
 
         let logs = event.query_with_meta().await?;
 
