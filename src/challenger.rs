@@ -271,7 +271,18 @@ where
 
         loop {
             interval.tick().await;
-            self.process().await?;
+
+            match self.process().await {
+                Ok(_) => {
+                    debug!("All ok, continue with next tick...");
+                }
+                Err(err) => {
+                    error!(
+                        "Address {:?}, failed to process opPokes: {:?}",
+                        self.address, err
+                    );
+                }
+            }
         }
     }
 }
