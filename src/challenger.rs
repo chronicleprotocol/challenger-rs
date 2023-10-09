@@ -18,6 +18,7 @@ use ethers::{
     contract::{abigen, Contract, LogMeta},
     core::types::{Address, ValueOrArray, U64},
     providers::Middleware,
+    types::BlockNumber,
 };
 use eyre::Result;
 use log::{debug, error, info};
