@@ -28,7 +28,10 @@ use std::sync::Arc;
 mod challenger;
 mod wallet;
 use challenger::Challenger;
+use tokio::signal;
 use tokio::sync::mpsc::channel;
+use tokio_util::sync::CancellationToken;
+
 use wallet::{CustomWallet, KeystoreWallet, PrivateKeyWallet};
 
 #[derive(Parser, Debug)]
@@ -117,19 +120,22 @@ async fn main() -> Result<()> {
 
     let client = Arc::new(SignerMiddleware::new(provider, signer));
 
+    let token = CancellationToken::new();
     let (send, mut recv) = channel(1);
 
     for address in &args.addresses {
         let address = address.parse::<Address>()?;
 
-        let cloned_client = client.clone();
-        let c_send = send.clone();
+        let client_clone = client.clone();
+        let send_clone = send.clone();
+        let token_clone = token.clone();
+
         tokio::spawn(async move {
             info!("Address {:?} starting monitoring opPokes", address);
 
-            let mut challenger = Challenger::new(address, cloned_client);
+            let mut challenger = Challenger::new(address, client_clone);
 
-            challenger.start(c_send).await
+            challenger.start(send_clone, token_clone).await
         });
     }
 
@@ -139,12 +145,26 @@ async fn main() -> Result<()> {
     // sleeps forever.
     drop(send);
 
-    let _ = recv.recv().await;
+    tokio::select! {
+        _ = signal::ctrl_c() => {
+            info!("Received Ctrl-C, shutting down");
+            token.cancel();
+
+            // Waiting for all tasks to finish
+            recv.recv().await;
+        },
+
+        _ = recv.recv() => {
+            info!("Tasks finished, shutting down");
+        },
+    }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
 
     #[test]

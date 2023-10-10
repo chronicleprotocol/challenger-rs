@@ -13,19 +13,18 @@
 //  You should have received a copy of the GNU Affero General Public License
 //  along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use ethers::{
     contract::{abigen, Contract, LogMeta},
     core::types::{Address, ValueOrArray, U64},
     providers::Middleware,
-    types::BlockNumber,
 };
 use eyre::Result;
 use log::{debug, error, info};
 use scribe_optimistic::OpPokeChallengedSuccessfullyFilter;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 use tokio::{sync::mpsc::Sender, time};
+use tokio_util::sync::CancellationToken;
 
 abigen!(ScribeOptimistic, "./abi/ScribeOptimistic.json");
 
@@ -35,11 +34,14 @@ abigen!(ScribeOptimistic, "./abi/ScribeOptimistic.json");
 const SLOT_PERIOD_SECONDS: u16 = 12;
 
 #[allow(dead_code)]
+#[derive(Debug)]
 pub struct Challenger<M> {
     address: Address,
     client: Arc<M>,
     contract: ScribeOptimistic<M>,
     last_processed_block: Option<U64>,
+    challenge_period_in_sec: u16,
+    challenge_period_last_updated_at: Option<DateTime<Utc>>,
 }
 
 impl<M: Middleware> Challenger<M>
@@ -55,7 +57,40 @@ where
             client: client,
             contract: contract,
             last_processed_block: None,
+            challenge_period_in_sec: 0,
+            challenge_period_last_updated_at: None,
         }
+    }
+
+    // Reloads challenge period from contract.
+    // This function have to be called every N time, because challenge period can be changed by contract owner.
+    async fn reload_challenge_period(&mut self) -> Result<()> {
+        let challenge_period_in_sec = self.contract.op_challenge_period().call().await.unwrap();
+        debug!(
+            "Address {:?}, reloaded opChallenge period for contract is {:?}",
+            self.address, challenge_period_in_sec
+        );
+        self.challenge_period_in_sec = challenge_period_in_sec;
+        self.challenge_period_last_updated_at = Some(Utc::now());
+
+        Ok(())
+    }
+
+    // Reloads challenge period value if it was not pulled from contract or pulled more than 10 mins ago.
+    async fn reload_challenge_period_if_needed(&mut self) -> Result<()> {
+        let need_update = match self.challenge_period_last_updated_at {
+            None => true,
+            Some(utc) => {
+                let diff = Utc::now() - utc;
+                diff.to_std().unwrap() > Duration::from_secs(600)
+            }
+        };
+
+        if need_update {
+            self.reload_challenge_period().await.unwrap();
+        }
+
+        Ok(())
     }
 
     // Gets earliest block number we can search for non challenged `opPokes`
@@ -73,6 +108,7 @@ where
     async fn get_successful_challenges(
         &self,
         from_block: U64,
+        to_block: U64,
     ) -> Result<Vec<(OpPokeChallengedSuccessfullyFilter, LogMeta)>> {
         debug!(
             "Address {:?}, searching OpPokeChallengedSuccessfully events from block {:?}",
@@ -82,7 +118,22 @@ where
             Contract::event_of_type::<OpPokeChallengedSuccessfullyFilter>(self.client.clone())
                 .address(ValueOrArray::Array(vec![self.address]))
                 .from_block(from_block)
-                .to_block(BlockNumber::Latest);
+                .to_block(to_block);
+
+        Ok(event.query_with_meta().await?)
+    }
+
+    // Gets list of OpPoked events for blocks gap we need.
+    async fn get_op_pokes(
+        &self,
+        from_block: U64,
+        to_block: U64,
+    ) -> Result<Vec<(OpPokedFilter, LogMeta)>> {
+        // Fetches `OpPoked` events
+        let event = Contract::event_of_type::<OpPokedFilter>(self.client.clone())
+            .address(ValueOrArray::Array(vec![self.address]))
+            .from_block(from_block)
+            .to_block(to_block);
 
         Ok(event.query_with_meta().await?)
     }
@@ -101,7 +152,7 @@ where
     }
 
     // TODO: Need tests
-    fn filter_unchallenged_events(
+    fn filter_unchallenged_pokes(
         &self,
         pokes: Vec<(OpPokedFilter, LogMeta)>,
         challenges: Vec<(OpPokeChallengedSuccessfullyFilter, LogMeta)>,
@@ -152,18 +203,15 @@ where
     }
 
     async fn process(&mut self) -> Result<()> {
-        let challenge_period_in_sec = self.contract.op_challenge_period().call().await?;
-        debug!(
-            "Address {:?}, opChallenge period for contract is {:?}",
-            self.address, challenge_period_in_sec
-        );
+        // Reloads challenge period value
+        self.reload_challenge_period_if_needed().await.unwrap();
 
         // Getting last block from chain
-        let last_block_number = self.client.get_block_number().await?;
+        let latest_block_number = self.client.get_block_number().await.unwrap();
 
         // Fetching block we have to start with
         let from_block = self.last_processed_block.unwrap_or(
-            self.get_starting_block_number(last_block_number, challenge_period_in_sec)
+            self.get_starting_block_number(latest_block_number, self.challenge_period_in_sec)
                 .await?,
         );
 
@@ -173,32 +221,34 @@ where
         );
 
         // Updating last processed block with latest chain block
-        self.last_processed_block = Some(last_block_number);
+        self.last_processed_block = Some(latest_block_number);
 
         // Fetch list of `OpPokeChallengedSuccessfully` events
-        let challenges = self.get_successful_challenges(from_block).await?;
+        let challenges = self
+            .get_successful_challenges(from_block, latest_block_number)
+            .await
+            .unwrap();
 
         // Fetches `OpPoked` events
-        let event = Contract::event_of_type::<OpPokedFilter>(self.client.clone())
-            .address(ValueOrArray::Array(vec![self.address]))
-            .from_block(from_block)
-            .to_block(BlockNumber::Latest);
+        let op_pokes = self
+            .get_op_pokes(from_block, latest_block_number)
+            .await
+            .unwrap();
 
-        let logs = event.query_with_meta().await?;
+        let unchallenged_pokes = self.filter_unchallenged_pokes(op_pokes, challenges);
 
-        let filtered = self.filter_unchallenged_events(logs, challenges);
-
-        if filtered.len() == 0 {
-            info!(
+        // Check if we have unchallenged pokes
+        if unchallenged_pokes.len() == 0 {
+            debug!(
                 "Address {:?}, no unchallenged opPokes found, skipping...",
                 self.address
             );
             return Ok(());
         }
 
-        for (log, meta) in filtered {
+        for (log, meta) in unchallenged_pokes {
             let challengeable = self
-                .is_challengeable(meta.block_number, challenge_period_in_sec)
+                .is_challengeable(meta.block_number, self.challenge_period_in_sec)
                 .await?;
 
             if !challengeable {
@@ -229,6 +279,11 @@ where
             );
 
             if !valid {
+                debug!(
+                    "Address {:?}, schnorr data is not valid, trying to challenge...",
+                    self.address
+                );
+
                 // TODO: handle error gracefully, we should go further even if error happened
                 match self.challenge(schnorr_data.clone()).await {
                     Ok(receipt) => {
@@ -269,21 +324,32 @@ where
     }
 
     /// Start address processing
-    pub async fn start(&mut self, _sender: Sender<()>) -> Result<()> {
+    pub async fn start(
+        &mut self,
+        _sender: Sender<()>,
+        cancellation_token: CancellationToken,
+    ) -> Result<()> {
         let mut interval = time::interval(Duration::from_secs(30));
 
         loop {
-            interval.tick().await;
-
-            match self.process().await {
-                Ok(_) => {
-                    debug!("All ok, continue with next tick...");
+            tokio::select! {
+                _ = cancellation_token.cancelled() => {
+                    info!("Address {:?}, cancellation token received, stopping...", self.address);
+                    return Ok(());
                 }
-                Err(err) => {
-                    error!(
-                        "Address {:?}, failed to process opPokes: {:?}",
-                        self.address, err
-                    );
+                _ = interval.tick() => {
+                    debug!("Address {:?}, interval tick", self.address);
+                    match self.process().await {
+                        Ok(_) => {
+                            debug!("All ok, continue with next tick...");
+                        }
+                        Err(err) => {
+                            error!(
+                                "Address {:?}, failed to process opPokes: {:?}",
+                                self.address, err
+                            );
+                        }
+                    }
                 }
             }
         }
