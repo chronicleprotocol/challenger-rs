@@ -15,50 +15,43 @@
 
 use chrono::{DateTime, Utc};
 use ethers::{
-    contract::{Contract, LogMeta},
-    core::types::{Address, ValueOrArray, U64},
-    providers::Middleware,
+    contract::LogMeta,
+    core::types::{Address, U64},
 };
 use eyre::Result;
 use log::{debug, error, info};
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 use tokio::{sync::mpsc::Sender, time};
 use tokio_util::sync::CancellationToken;
 
-use self::contract::{
-    OpPokeChallengedSuccessfullyFilter, OpPokedFilter, SchnorrData, ScribeOptimistic,
-};
+use self::contract::{OpPokeChallengedSuccessfullyFilter, OpPokedFilter, ScribeOptimisticProvider};
 
-mod contract;
+pub mod contract;
 
 // Note: this is true virtually all of the time but because of leap seconds not always.
 // We take minimal time just to be sure, it's always better to check outdated blocks
 // rather than miss some.
 const SLOT_PERIOD_SECONDS: u16 = 12;
 
-#[allow(dead_code)]
-#[derive(Debug)]
-pub struct Challenger<M> {
+// Time interval in seconds to reload challenge period from contract.
+const DEFAULT_CHALLENGE_PERIOD_RELOAD_INTERVAL: Duration = Duration::from_secs(600);
+
+pub struct Challenger {
     address: Address,
-    client: Arc<M>,
-    contract: ScribeOptimistic<M>,
+    contract_provider: Box<dyn ScribeOptimisticProvider + 'static>,
     last_processed_block: Option<U64>,
     challenge_period_in_sec: u16,
     challenge_period_last_updated_at: Option<DateTime<Utc>>,
 }
 
-impl<M: Middleware> Challenger<M>
-where
-    M: 'static,
-    M::Error: 'static,
-{
-    pub fn new(address: Address, client: Arc<M>) -> Self {
-        let contract = ScribeOptimistic::new(address, client.clone());
-
+impl Challenger {
+    pub fn new(
+        address: Address,
+        contract_provider: Box<dyn ScribeOptimisticProvider + 'static>,
+    ) -> Self {
         Self {
-            address: address,
-            client: client,
-            contract: contract,
+            address,
+            contract_provider,
             last_processed_block: None,
             challenge_period_in_sec: 0,
             challenge_period_last_updated_at: None,
@@ -68,7 +61,11 @@ where
     // Reloads challenge period from contract.
     // This function have to be called every N time, because challenge period can be changed by contract owner.
     async fn reload_challenge_period(&mut self) -> Result<()> {
-        let challenge_period_in_sec = self.contract.op_challenge_period().call().await.unwrap();
+        let challenge_period_in_sec = self
+            .contract_provider
+            .get_challenge_period(self.address)
+            .await?;
+
         debug!(
             "Address {:?}, reloaded opChallenge period for contract is {:?}",
             self.address, challenge_period_in_sec
@@ -85,7 +82,7 @@ where
             None => true,
             Some(utc) => {
                 let diff = Utc::now() - utc;
-                diff.to_std().unwrap() > Duration::from_secs(600)
+                diff.to_std().unwrap() > DEFAULT_CHALLENGE_PERIOD_RELOAD_INTERVAL
             }
         };
 
@@ -104,41 +101,7 @@ where
     ) -> Result<U64> {
         let blocks_per_period = challenge_period_in_sec / SLOT_PERIOD_SECONDS;
 
-        Ok(U64::from(last_block_number - blocks_per_period))
-    }
-
-    // Gets list of OpPokeChallengedSuccessfully events for blocks gap we need.
-    async fn get_successful_challenges(
-        &self,
-        from_block: U64,
-        to_block: U64,
-    ) -> Result<Vec<(OpPokeChallengedSuccessfullyFilter, LogMeta)>> {
-        debug!(
-            "Address {:?}, searching OpPokeChallengedSuccessfully events from block {:?}",
-            self.address, from_block
-        );
-        let event =
-            Contract::event_of_type::<OpPokeChallengedSuccessfullyFilter>(self.client.clone())
-                .address(ValueOrArray::Array(vec![self.address]))
-                .from_block(from_block)
-                .to_block(to_block);
-
-        Ok(event.query_with_meta().await?)
-    }
-
-    // Gets list of OpPoked events for blocks gap we need.
-    async fn get_op_pokes(
-        &self,
-        from_block: U64,
-        to_block: U64,
-    ) -> Result<Vec<(OpPokedFilter, LogMeta)>> {
-        // Fetches `OpPoked` events
-        let event = Contract::event_of_type::<OpPokedFilter>(self.client.clone())
-            .address(ValueOrArray::Array(vec![self.address]))
-            .from_block(from_block)
-            .to_block(to_block);
-
-        Ok(event.query_with_meta().await?)
+        Ok(last_block_number - blocks_per_period)
     }
 
     // Check if given block_number for log is already non challengeable
@@ -148,7 +111,12 @@ where
         challenge_period_in_sec: u16,
     ) -> Result<bool> {
         // Checking if log is possible to challenge ?
-        let block = self.client.get_block(block_number).await?.unwrap();
+        let block = self
+            .contract_provider
+            .get_block(block_number)
+            .await?
+            .unwrap();
+
         let diff = Utc::now().timestamp() as u64 - block.timestamp.as_u64();
 
         Ok(challenge_period_in_sec > diff as u16)
@@ -160,10 +128,7 @@ where
         pokes: Vec<(OpPokedFilter, LogMeta)>,
         challenges: Vec<(OpPokeChallengedSuccessfullyFilter, LogMeta)>,
     ) -> Vec<(OpPokedFilter, LogMeta)> {
-        if challenges.len() == 0 {
-            return pokes;
-        }
-        if pokes.len() == 0 {
+        if challenges.is_empty() || pokes.is_empty() {
             return pokes;
         }
         let mut result: Vec<(OpPokedFilter, LogMeta)> = vec![];
@@ -210,7 +175,11 @@ where
         self.reload_challenge_period_if_needed().await.unwrap();
 
         // Getting last block from chain
-        let latest_block_number = self.client.get_block_number().await.unwrap();
+        let latest_block_number = self
+            .contract_provider
+            .get_latest_block_number()
+            .await
+            .unwrap();
 
         // Fetching block we have to start with
         let from_block = self.last_processed_block.unwrap_or(
@@ -228,17 +197,21 @@ where
 
         // Fetch list of `OpPokeChallengedSuccessfully` events
         let challenges = self
-            .get_successful_challenges(from_block, latest_block_number)
+            .contract_provider
+            .get_successful_challenges(self.address, from_block, latest_block_number)
             .await?;
 
         // Fetches `OpPoked` events
-        let op_pokes = self.get_op_pokes(from_block, latest_block_number).await?;
+        let op_pokes = self
+            .contract_provider
+            .get_op_pokes(self.address, from_block, latest_block_number)
+            .await?;
 
         // ignoring already challenged pokes
         let unchallenged_pokes = self.reject_challenged_pokes(op_pokes, challenges);
 
         // Check if we have unchallenged pokes
-        if unchallenged_pokes.len() == 0 {
+        if unchallenged_pokes.is_empty() {
             debug!(
                 "Address {:?}, no unchallenged opPokes found, skipping...",
                 self.address
@@ -259,18 +232,9 @@ where
                 continue;
             }
 
-            let message = self
-                .contract
-                .construct_poke_message(log.poke_data)
-                .call()
-                .await?;
-
-            let schnorr_data = log.schnorr_data;
-
             let valid = self
-                .contract
-                .is_acceptable_schnorr_signature_now(message, schnorr_data.clone())
-                .call()
+                .contract_provider
+                .is_schnorr_signature_valid(log.clone())
                 .await?;
 
             debug!(
@@ -285,7 +249,7 @@ where
                 );
 
                 // TODO: handle error gracefully, we should go further even if error happened
-                match self.challenge(schnorr_data.clone()).await {
+                match self.contract_provider.challenge(log.schnorr_data).await {
                     Ok(receipt) => {
                         info!(
                             "Address {:?}, successfully sent `opChallenge` transaction {:?}",
@@ -301,25 +265,6 @@ where
                 };
             }
         }
-        Ok(())
-    }
-
-    async fn challenge(&self, schnorr_data: SchnorrData) -> Result<()> {
-        info!(
-            "Address {:?}, Calling opChallenge for {:?}",
-            self.address, schnorr_data
-        );
-        let receipt = self
-            .contract
-            .op_challenge(schnorr_data.to_owned())
-            .send()
-            .await?
-            .await?;
-
-        debug!(
-            "Address {:?}, opChallenge receipt: {:?}",
-            self.address, receipt
-        );
         Ok(())
     }
 

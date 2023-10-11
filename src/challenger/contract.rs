@@ -14,12 +14,12 @@
 //  along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use async_trait::async_trait;
-use std::sync::Arc;
+use std::{fmt::Debug, sync::Arc};
 
 use ethers::{
     contract::{abigen, Contract, LogMeta},
     providers::Middleware,
-    types::{Address, Block, BlockNumber, TransactionReceipt, ValueOrArray, H256, U64},
+    types::{Address, Block, TransactionReceipt, ValueOrArray, H256, U64},
 };
 use eyre::{Result, WrapErr};
 use log::debug;
@@ -28,12 +28,12 @@ use log::debug;
 abigen!(ScribeOptimistic, "./abi/ScribeOptimistic.json");
 
 #[async_trait]
-pub trait ScribeOptimisticProvider {
+pub trait ScribeOptimisticProvider: Send + Sync {
     /// Returns the latest block number from RPC.
     async fn get_latest_block_number(&self) -> Result<U64>;
 
     /// Returns block details with given `block_number` from RPC.
-    async fn get_block(&self, block_number: BlockNumber) -> Result<Option<Block<H256>>>;
+    async fn get_block(&self, block_number: U64) -> Result<Option<Block<H256>>>;
 
     /// Returns challenge period from ScribeOptimistic smart contract deployed to `address`.
     async fn get_challenge_period(&self, address: Address) -> Result<u16>;
@@ -43,8 +43,8 @@ pub trait ScribeOptimisticProvider {
     async fn get_successful_challenges(
         &self,
         address: Address,
-        from_block: BlockNumber,
-        to_block: BlockNumber,
+        from_block: U64,
+        to_block: U64,
     ) -> Result<Vec<(OpPokeChallengedSuccessfullyFilter, LogMeta)>>;
 
     /// Returns list of `OpPoked` events and log metadata in between `from_block` and `to_block` from smart contract
@@ -52,8 +52,8 @@ pub trait ScribeOptimisticProvider {
     async fn get_op_pokes(
         &self,
         address: Address,
-        from_block: BlockNumber,
-        to_block: BlockNumber,
+        from_block: U64,
+        to_block: U64,
     ) -> Result<Vec<(OpPokedFilter, LogMeta)>>;
 
     /// Returns true if given `OpPoked` schnorr signature is valid.
@@ -63,6 +63,7 @@ pub trait ScribeOptimisticProvider {
     async fn challenge(&self, schnorr_data: SchnorrData) -> Result<Option<TransactionReceipt>>;
 }
 
+#[derive(Debug)]
 pub struct HttpScribeOptimisticProvider<M> {
     address: Address,
     client: Arc<M>,
@@ -96,7 +97,7 @@ where
     }
 
     /// Returns block details with given `block_number` from RPC.
-    async fn get_block(&self, block_number: BlockNumber) -> Result<Option<Block<H256>>> {
+    async fn get_block(&self, block_number: U64) -> Result<Option<Block<H256>>> {
         self.client
             .get_block(block_number)
             .await
@@ -119,8 +120,8 @@ where
     async fn get_successful_challenges(
         &self,
         address: Address,
-        from_block: BlockNumber,
-        to_block: BlockNumber,
+        from_block: U64,
+        to_block: U64,
     ) -> Result<Vec<(OpPokeChallengedSuccessfullyFilter, LogMeta)>> {
         debug!(
             "Address {:?}, searching OpPokeChallengedSuccessfully events from block {:?} to block {:?}",
@@ -143,8 +144,8 @@ where
     async fn get_op_pokes(
         &self,
         address: Address,
-        from_block: BlockNumber,
-        to_block: BlockNumber,
+        from_block: U64,
+        to_block: U64,
     ) -> Result<Vec<(OpPokedFilter, LogMeta)>> {
         debug!(
             "Address {:?}, searching OpPoked events from block {:?} to block {:?}",

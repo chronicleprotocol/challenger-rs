@@ -22,12 +22,14 @@ use ethers::{
     signers::Signer,
 };
 use eyre::Result;
-use log::{debug, error, info};
+use log::{debug, info};
 use std::sync::Arc;
 
 mod challenger;
 mod wallet;
+use challenger::contract::HttpScribeOptimisticProvider;
 use challenger::Challenger;
+
 use tokio::signal;
 use tokio::sync::mpsc::channel;
 use tokio_util::sync::CancellationToken;
@@ -105,10 +107,12 @@ async fn main() -> Result<()> {
 
     let provider = Provider::<Http>::try_from(args.rpc_url.as_str())?;
 
+    debug!("Connected to {:?}", provider.url());
     let chain_id = args
         .chain_id
         .unwrap_or(provider.get_chainid().await?.as_u64());
 
+    debug!("Chain id: {:?}", chain_id);
     // Generating signer from given private key
     let signer = args.wallet()?.unwrap().with_chain_id(chain_id);
 
@@ -123,17 +127,20 @@ async fn main() -> Result<()> {
     let token = CancellationToken::new();
     let (send, mut recv) = channel(args.addresses.len());
 
+    // let mut handles = Vec::new();
+
     for address in &args.addresses {
         let address = address.parse::<Address>()?;
 
         let client_clone = client.clone();
         let send_clone = send.clone();
         let token_clone = token.clone();
-
         tokio::spawn(async move {
             info!("Address {:?} starting monitoring opPokes", address);
 
-            let mut challenger = Challenger::new(address, client_clone);
+            let contract_provider =
+                Box::new(HttpScribeOptimisticProvider::new(address, client_clone));
+            let mut challenger = Challenger::new(address, contract_provider);
 
             challenger.start(send_clone, token_clone).await
         });
