@@ -152,7 +152,7 @@ where
     }
 
     // TODO: Need tests
-    fn filter_unchallenged_pokes(
+    fn reject_challenged_pokes(
         &self,
         pokes: Vec<(OpPokedFilter, LogMeta)>,
         challenges: Vec<(OpPokeChallengedSuccessfullyFilter, LogMeta)>,
@@ -226,16 +226,13 @@ where
         // Fetch list of `OpPokeChallengedSuccessfully` events
         let challenges = self
             .get_successful_challenges(from_block, latest_block_number)
-            .await
-            .unwrap();
+            .await?;
 
         // Fetches `OpPoked` events
-        let op_pokes = self
-            .get_op_pokes(from_block, latest_block_number)
-            .await
-            .unwrap();
+        let op_pokes = self.get_op_pokes(from_block, latest_block_number).await?;
 
-        let unchallenged_pokes = self.filter_unchallenged_pokes(op_pokes, challenges);
+        // ignoring already challenged pokes
+        let unchallenged_pokes = self.reject_challenged_pokes(op_pokes, challenges);
 
         // Check if we have unchallenged pokes
         if unchallenged_pokes.len() == 0 {

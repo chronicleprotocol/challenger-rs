@@ -22,7 +22,7 @@ use ethers::{
     signers::Signer,
 };
 use eyre::Result;
-use log::{debug, info};
+use log::{debug, error, info};
 use std::sync::Arc;
 
 mod challenger;
@@ -121,7 +121,7 @@ async fn main() -> Result<()> {
     let client = Arc::new(SignerMiddleware::new(provider, signer));
 
     let token = CancellationToken::new();
-    let (send, mut recv) = channel(1);
+    let (send, mut recv) = channel(args.addresses.len());
 
     for address in &args.addresses {
         let address = address.parse::<Address>()?;
