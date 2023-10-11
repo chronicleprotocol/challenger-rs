@@ -15,18 +15,21 @@
 
 use chrono::{DateTime, Utc};
 use ethers::{
-    contract::{abigen, Contract, LogMeta},
+    contract::{Contract, LogMeta},
     core::types::{Address, ValueOrArray, U64},
     providers::Middleware,
 };
 use eyre::Result;
 use log::{debug, error, info};
-use scribe_optimistic::OpPokeChallengedSuccessfullyFilter;
 use std::{sync::Arc, time::Duration};
 use tokio::{sync::mpsc::Sender, time};
 use tokio_util::sync::CancellationToken;
 
-abigen!(ScribeOptimistic, "./abi/ScribeOptimistic.json");
+use self::contract::{
+    OpPokeChallengedSuccessfullyFilter, OpPokedFilter, SchnorrData, ScribeOptimistic,
+};
+
+mod contract;
 
 // Note: this is true virtually all of the time but because of leap seconds not always.
 // We take minimal time just to be sure, it's always better to check outdated blocks
