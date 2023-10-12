@@ -135,8 +135,7 @@ async fn main() -> Result<()> {
         set.spawn(async move {
             info!("Address {:?} starting monitoring opPokes", address);
 
-            let contract_provider =
-                Box::new(HttpScribeOptimisticProvider::new(address, client_clone));
+            let contract_provider = HttpScribeOptimisticProvider::new(address, client_clone);
             let mut challenger = Challenger::new(address, contract_provider);
 
             challenger.start().await

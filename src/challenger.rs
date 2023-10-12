@@ -14,7 +14,6 @@
 //  along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use chrono::{DateTime, Utc};
-use ethers::abi::AbiEncode;
 use ethers::{
     contract::LogMeta,
     core::types::{Address, U64},
@@ -22,8 +21,7 @@ use ethers::{
 use eyre::Result;
 use log::{debug, error, info};
 use std::time::Duration;
-use tokio::{sync::mpsc::Sender, time};
-use tokio_util::sync::CancellationToken;
+use tokio::time;
 
 use self::contract::{OpPokeChallengedSuccessfullyFilter, OpPokedFilter, ScribeOptimisticProvider};
 
@@ -37,19 +35,19 @@ const SLOT_PERIOD_SECONDS: u16 = 12;
 // Time interval in seconds to reload challenge period from contract.
 const DEFAULT_CHALLENGE_PERIOD_RELOAD_INTERVAL: Duration = Duration::from_secs(600);
 
-pub struct Challenger {
+pub struct Challenger<P: ScribeOptimisticProvider + 'static> {
     address: Address,
-    contract_provider: Box<dyn ScribeOptimisticProvider + 'static>,
+    contract_provider: P,
     last_processed_block: Option<U64>,
     challenge_period_in_sec: u16,
     challenge_period_last_updated_at: Option<DateTime<Utc>>,
 }
 
-impl Challenger {
-    pub fn new(
-        address: Address,
-        contract_provider: Box<dyn ScribeOptimisticProvider + 'static>,
-    ) -> Self {
+impl<P> Challenger<P>
+where
+    P: ScribeOptimisticProvider + 'static,
+{
+    pub fn new(address: Address, contract_provider: P) -> Self {
         Self {
             address,
             contract_provider,
