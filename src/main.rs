@@ -22,7 +22,8 @@ use ethers::{
     signers::Signer,
 };
 use eyre::Result;
-use log::{debug, info};
+use log::{debug, error, info};
+use std::panic;
 use std::sync::Arc;
 
 mod challenger;
@@ -31,8 +32,7 @@ use challenger::contract::HttpScribeOptimisticProvider;
 use challenger::Challenger;
 
 use tokio::signal;
-use tokio::sync::mpsc::channel;
-use tokio_util::sync::CancellationToken;
+use tokio::task::JoinSet;
 
 use wallet::{CustomWallet, KeystoreWallet, PrivateKeyWallet};
 
@@ -124,47 +124,44 @@ async fn main() -> Result<()> {
 
     let client = Arc::new(SignerMiddleware::new(provider, signer));
 
-    let token = CancellationToken::new();
-    let (send, mut recv) = channel(args.addresses.len());
-
-    // let mut handles = Vec::new();
+    let mut set = JoinSet::new();
 
     for address in &args.addresses {
         let address = address.parse::<Address>()?;
 
         let client_clone = client.clone();
-        let send_clone = send.clone();
-        let token_clone = token.clone();
-        tokio::spawn(async move {
+        // let send_clone = send.clone();
+        // let token_clone = token.clone();
+        set.spawn(async move {
             info!("Address {:?} starting monitoring opPokes", address);
 
             let contract_provider =
                 Box::new(HttpScribeOptimisticProvider::new(address, client_clone));
             let mut challenger = Challenger::new(address, contract_provider);
 
-            challenger.start(send_clone, token_clone).await
+            challenger.start().await
         });
     }
-
-    // Wait for the tasks to finish.
-    //
-    // We drop our sender first because the recv() call otherwise
-    // sleeps forever.
-    drop(send);
 
     tokio::select! {
         _ = signal::ctrl_c() => {
             info!("Received Ctrl-C, shutting down");
-            token.cancel();
-
-            // Waiting for all tasks to finish
-            recv.recv().await;
         },
 
-        _ = recv.recv() => {
-            info!("Tasks finished, shutting down");
+        // some process terminated, no need to wait for others
+        res = set.join_next() => {
+            match res.unwrap() {
+                Ok(_) => info!("Task terminated without error, shutting down"),
+                Err(e) => {
+                    error!("Task terminated with error: {:#?}", e.to_string());
+                },
+            }
         },
     }
+
+    // Terminating all remaining tasks
+    set.shutdown().await;
+
     Ok(())
 }
 

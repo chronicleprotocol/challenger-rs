@@ -14,6 +14,7 @@
 //  along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use chrono::{DateTime, Utc};
+use ethers::abi::AbiEncode;
 use ethers::{
     contract::LogMeta,
     core::types::{Address, U64},
@@ -269,32 +270,22 @@ impl Challenger {
     }
 
     /// Start address processing
-    pub async fn start(
-        &mut self,
-        _sender: Sender<()>,
-        cancellation_token: CancellationToken,
-    ) -> Result<()> {
+    pub async fn start(&mut self) -> Result<()> {
         let mut interval = time::interval(Duration::from_secs(30));
 
         loop {
-            tokio::select! {
-                _ = cancellation_token.cancelled() => {
-                    info!("Address {:?}, cancellation token received, stopping...", self.address);
-                    return Ok(());
+            interval.tick().await;
+
+            debug!("Address {:?}, interval tick", self.address);
+            match self.process().await {
+                Ok(_) => {
+                    debug!("All ok, continue with next tick...");
                 }
-                _ = interval.tick() => {
-                    debug!("Address {:?}, interval tick", self.address);
-                    match self.process().await {
-                        Ok(_) => {
-                            debug!("All ok, continue with next tick...");
-                        }
-                        Err(err) => {
-                            error!(
-                                "Address {:?}, failed to process opPokes: {:?}",
-                                self.address, err
-                            );
-                        }
-                    }
+                Err(err) => {
+                    error!(
+                        "Address {:?}, failed to process opPokes: {:?}",
+                        self.address, err
+                    );
                 }
             }
         }
