@@ -121,54 +121,6 @@ where
         Ok(challenge_period_in_sec > diff as u16)
     }
 
-    // TODO: Need tests
-    fn reject_challenged_pokes(
-        &self,
-        pokes: Vec<(OpPokedFilter, LogMeta)>,
-        challenges: Vec<(OpPokeChallengedSuccessfullyFilter, LogMeta)>,
-    ) -> Vec<(OpPokedFilter, LogMeta)> {
-        if challenges.is_empty() || pokes.is_empty() {
-            return pokes;
-        }
-        let mut result: Vec<(OpPokedFilter, LogMeta)> = vec![];
-
-        if pokes.len() == 1 {
-            let (_, meta) = &pokes[0];
-            for (_, c_meta) in challenges.clone() {
-                if c_meta.block_number > meta.block_number {
-                    // empty result
-                    return result;
-                }
-            }
-            return pokes;
-        }
-
-        'pokes_loop: for i in 0..pokes.len() {
-            let (poke, meta) = &pokes.get(i).unwrap();
-            // If we do have next poke in list
-            if let Some((_, next_meta)) = &pokes.get(i + 1) {
-                for (_, c_meta) in challenges.clone() {
-                    if meta.block_number < c_meta.block_number
-                        && next_meta.block_number > c_meta.block_number
-                    {
-                        // poke already challenged
-                        continue 'pokes_loop;
-                    }
-                }
-            } else {
-                for (_, c_meta) in challenges.clone() {
-                    if c_meta.block_number > meta.block_number {
-                        // poke already challenged
-                        continue 'pokes_loop;
-                    }
-                }
-            }
-            result.push((poke.clone(), meta.clone()));
-        }
-
-        result
-    }
-
     async fn process(&mut self) -> Result<()> {
         // Reloads challenge period value
         self.reload_challenge_period_if_needed().await.unwrap();
@@ -207,7 +159,7 @@ where
             .await?;
 
         // ignoring already challenged pokes
-        let unchallenged_pokes = self.reject_challenged_pokes(op_pokes, challenges);
+        let unchallenged_pokes = reject_challenged_pokes(op_pokes, challenges);
 
         // Check if we have unchallenged pokes
         if unchallenged_pokes.is_empty() {
@@ -287,5 +239,99 @@ where
                 }
             }
         }
+    }
+}
+
+// Removes challenged pokes from list of loaded pokes.
+// Logic is very simple, if `OpPokeChallengedSuccessfully` event is after `OpPoked` event, then we can safely
+// say that `OpPoked` event is already challenged. So we need to validate sequence of events and remove all
+// `OpPoked` events that has `OpPokeChallengedSuccessfully` event after it.
+fn reject_challenged_pokes(
+    pokes: Vec<(OpPokedFilter, LogMeta)>,
+    challenges: Vec<(OpPokeChallengedSuccessfullyFilter, LogMeta)>,
+) -> Vec<(OpPokedFilter, LogMeta)> {
+    if challenges.is_empty() || pokes.is_empty() {
+        return pokes;
+    }
+    let mut result: Vec<(OpPokedFilter, LogMeta)> = vec![];
+
+    if pokes.len() == 1 {
+        let (_, meta) = &pokes[0];
+        for (_, c_meta) in challenges.clone() {
+            if c_meta.block_number > meta.block_number {
+                // empty result
+                return result;
+            }
+        }
+        return pokes;
+    }
+
+    'pokes_loop: for i in 0..pokes.len() {
+        let (poke, meta) = &pokes.get(i).unwrap();
+        // If we do have next poke in list
+        if let Some((_, next_meta)) = &pokes.get(i + 1) {
+            for (_, c_meta) in challenges.clone() {
+                if meta.block_number < c_meta.block_number
+                    && next_meta.block_number > c_meta.block_number
+                {
+                    // poke already challenged
+                    continue 'pokes_loop;
+                }
+            }
+        } else {
+            for (_, c_meta) in challenges.clone() {
+                if c_meta.block_number > meta.block_number {
+                    // poke already challenged
+                    continue 'pokes_loop;
+                }
+            }
+        }
+        result.push((poke.clone(), meta.clone()));
+    }
+
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use ethers::types::{H160, H256, U256};
+
+    use super::*;
+
+    // Builds new LogMeta with default values, only `block_number` is useful for us.
+    fn new_log_meta(block_number: U64) -> LogMeta {
+        LogMeta {
+            block_number,
+            address: H160::from_low_u64_be(0),
+            block_hash: H256::from_low_u64_be(0),
+            transaction_hash: H256::from_low_u64_be(0),
+            transaction_index: U64::from(0),
+            log_index: U256::from(0),
+        }
+    }
+
+    #[test]
+    fn filtering_does_nothing_on_empty_lists() {
+        let pokes: Vec<(OpPokedFilter, LogMeta)> = vec![];
+        let challenges: Vec<(OpPokeChallengedSuccessfullyFilter, LogMeta)> = vec![];
+
+        let result = reject_challenged_pokes(pokes.clone(), challenges);
+
+        assert_eq!(result, pokes);
+    }
+
+    #[test]
+    fn filtering_removed_challenged_events() {
+        // Only 1 poke - returns it back
+        let pokes: Vec<(OpPokedFilter, LogMeta)> = vec![(
+            OpPokedFilter {
+                ..Default::default()
+            },
+            new_log_meta(U64::from(1)),
+        )];
+        let challenges: Vec<(OpPokeChallengedSuccessfullyFilter, LogMeta)> = vec![];
+
+        let result = reject_challenged_pokes(pokes.clone(), challenges.clone());
+        assert_eq!(pokes, result);
     }
 }
