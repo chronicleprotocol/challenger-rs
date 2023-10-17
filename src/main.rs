@@ -26,10 +26,10 @@ use log::{debug, error, info};
 use std::panic;
 use std::sync::Arc;
 
-mod challenger;
 mod wallet;
-use challenger::contract::HttpScribeOptimisticProvider;
-use challenger::Challenger;
+
+use challenger_lib::contract::HttpScribeOptimisticProvider;
+use challenger_lib::Challenger;
 
 use tokio::signal;
 use tokio::task::JoinSet;
@@ -130,8 +130,6 @@ async fn main() -> Result<()> {
         let address = address.parse::<Address>()?;
 
         let client_clone = client.clone();
-        // let send_clone = send.clone();
-        // let token_clone = token.clone();
         set.spawn(async move {
             info!("Address {:?} starting monitoring opPokes", address);
 
