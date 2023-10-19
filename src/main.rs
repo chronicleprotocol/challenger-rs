@@ -134,7 +134,7 @@ async fn main() -> Result<()> {
             info!("Address {:?} starting monitoring opPokes", address);
 
             let contract_provider = HttpScribeOptimisticProvider::new(address, client_clone);
-            let mut challenger = Challenger::new(address, contract_provider);
+            let mut challenger = Challenger::new(address, contract_provider, None, None);
 
             challenger.start().await
         });

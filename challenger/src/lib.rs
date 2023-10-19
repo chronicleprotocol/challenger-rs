@@ -35,8 +35,8 @@ const SLOT_PERIOD_SECONDS: u16 = 12;
 // Time interval in seconds to reload challenge period from contract.
 const DEFAULT_CHALLENGE_PERIOD_RELOAD_INTERVAL: Duration = Duration::from_secs(600);
 
-// Time interval for checking new pokes in seconds.
-const DEFAULT_CHECK_INTERVAL: u64 = 30;
+// Time interval for checking new pokes in milliseconds.
+const DEFAULT_CHECK_INTERVAL_IN_MS: u64 = 30_000;
 
 // Max number of failures before we stop processing address.
 const MAX_FAILURE_COUNT: u8 = 3;
@@ -47,14 +47,21 @@ pub struct Challenger<P: ScribeOptimisticProvider + 'static> {
     last_processed_block: Option<U64>,
     challenge_period_in_sec: u16,
     challenge_period_last_updated_at: Option<DateTime<Utc>>,
+    max_failure_count: u8,
     failure_count: u8,
+    tick_interval: Duration,
 }
 
 impl<P> Challenger<P>
 where
     P: ScribeOptimisticProvider + 'static,
 {
-    pub fn new(address: Address, contract_provider: P) -> Self {
+    pub fn new(
+        address: Address,
+        contract_provider: P,
+        tick_interval: Option<u64>,
+        max_failure_count: Option<u8>,
+    ) -> Self {
         Self {
             address,
             contract_provider,
@@ -62,6 +69,10 @@ where
             challenge_period_in_sec: 0,
             challenge_period_last_updated_at: None,
             failure_count: 0,
+            max_failure_count: max_failure_count.unwrap_or(MAX_FAILURE_COUNT),
+            tick_interval: Duration::from_millis(
+                tick_interval.unwrap_or(DEFAULT_CHECK_INTERVAL_IN_MS),
+            ),
         }
     }
 
@@ -229,12 +240,10 @@ where
 
     /// Start address processing
     pub async fn start(&mut self) -> Result<()> {
-        let mut interval = time::interval(Duration::from_secs(DEFAULT_CHECK_INTERVAL));
+        let mut interval = time::interval(self.tick_interval);
 
         loop {
-            interval.tick().await;
-
-            debug!("Address {:?}, interval tick", self.address);
+            debug!("Address {:?}, processing tick", self.address);
             match self.process().await {
                 Ok(_) => {
                     debug!("All ok, continue with next tick...");
@@ -249,7 +258,7 @@ where
 
                     // Increment and check error counter
                     self.failure_count += 1;
-                    if self.failure_count >= MAX_FAILURE_COUNT {
+                    if self.failure_count >= self.max_failure_count {
                         error!(
                             "Address {:?}, reached max failure count, stopping processing...",
                             self.address
@@ -258,6 +267,8 @@ where
                     }
                 }
             }
+
+            interval.tick().await;
         }
     }
 }
@@ -314,9 +325,47 @@ fn reject_challenged_pokes(
 
 #[cfg(test)]
 mod tests {
-    use ethers::types::{H160, H256, U256};
-
     use super::*;
+
+    use async_trait::async_trait;
+    use contract::SchnorrData;
+    use ethers::{
+        contract::LogMeta,
+        types::{Address, Block, TransactionReceipt, H160, H256, U256, U64},
+    };
+    use eyre::Result;
+    use mockall::{mock, predicate::*};
+
+    mock! {
+        pub TestScribe{}
+
+        #[async_trait]
+        impl ScribeOptimisticProvider for TestScribe {
+            async fn get_latest_block_number(&self) -> Result<U64>;
+
+            async fn get_block(&self, block_number: U64) -> Result<Option<Block<H256>>>;
+
+            async fn get_challenge_period(&self, address: Address) -> Result<u16>;
+
+            async fn get_successful_challenges(
+                &self,
+                address: Address,
+                from_block: U64,
+                to_block: U64,
+            ) -> Result<Vec<(OpPokeChallengedSuccessfullyFilter, LogMeta)>>;
+
+            async fn get_op_pokes(
+                &self,
+                address: Address,
+                from_block: U64,
+                to_block: U64,
+            ) -> Result<Vec<(OpPokedFilter, LogMeta)>>;
+
+            async fn is_schnorr_signature_valid(&self, op_poked: OpPokedFilter) -> Result<bool>;
+
+            async fn challenge(&self, schnorr_data: SchnorrData) -> Result<Option<TransactionReceipt>>;
+        }
+    }
 
     // Builds new LogMeta with default values, only `block_number` is useful for us.
     fn new_log_meta(block_number: U64) -> LogMeta {
@@ -331,153 +380,387 @@ mod tests {
     }
 
     #[test]
-    fn filtering_does_nothing_on_empty_lists() {
-        let pokes: Vec<(OpPokedFilter, LogMeta)> = vec![];
-        let challenges: Vec<(OpPokeChallengedSuccessfullyFilter, LogMeta)> = vec![];
+    fn test_reject_challenged_pokes() {
+        {
+            // Does nothing if no pokes or challenges
+            let pokes: Vec<(OpPokedFilter, LogMeta)> = vec![];
+            let challenges: Vec<(OpPokeChallengedSuccessfullyFilter, LogMeta)> = vec![];
 
-        let result = reject_challenged_pokes(pokes.clone(), challenges);
+            let result = reject_challenged_pokes(pokes.clone(), challenges);
 
-        assert_eq!(result, pokes);
-    }
+            assert_eq!(result, pokes);
+        }
 
-    #[test]
-    fn one_poke_no_challenges() {
-        // Only 1 poke - returns it back
-        let pokes: Vec<(OpPokedFilter, LogMeta)> = vec![(
-            OpPokedFilter {
-                ..Default::default()
-            },
-            new_log_meta(U64::from(1)),
-        )];
-        let challenges: Vec<(OpPokeChallengedSuccessfullyFilter, LogMeta)> = vec![];
-
-        let result = reject_challenged_pokes(pokes.clone(), challenges);
-        assert_eq!(result, pokes);
-    }
-    #[test]
-    fn one_poke_one_challenge_after_it() {
-        let pokes: Vec<(OpPokedFilter, LogMeta)> = vec![(
-            OpPokedFilter {
-                ..Default::default()
-            },
-            new_log_meta(U64::from(1)),
-        )];
-        let challenges: Vec<(OpPokeChallengedSuccessfullyFilter, LogMeta)> = vec![(
-            OpPokeChallengedSuccessfullyFilter {
-                ..Default::default()
-            },
-            new_log_meta(U64::from(2)),
-        )];
-
-        let result = reject_challenged_pokes(pokes, challenges);
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn one_poke_one_challenge_before_poke() {
-        let pokes: Vec<(OpPokedFilter, LogMeta)> = vec![(
-            OpPokedFilter {
-                ..Default::default()
-            },
-            new_log_meta(U64::from(2)),
-        )];
-        let challenges: Vec<(OpPokeChallengedSuccessfullyFilter, LogMeta)> = vec![(
-            OpPokeChallengedSuccessfullyFilter {
-                ..Default::default()
-            },
-            new_log_meta(U64::from(1)),
-        )];
-
-        let result = reject_challenged_pokes(pokes.clone(), challenges);
-        assert_eq!(result, pokes);
-    }
-
-    #[test]
-    fn multiple_pokes_with_one_challenge() {
-        let pokes: Vec<(OpPokedFilter, LogMeta)> = vec![
-            (
+        {
+            // Only 1 poke - returns it back
+            let pokes: Vec<(OpPokedFilter, LogMeta)> = vec![(
                 OpPokedFilter {
                     ..Default::default()
                 },
                 new_log_meta(U64::from(1)),
-            ),
-            (
-                OpPokedFilter {
-                    ..Default::default()
-                },
-                new_log_meta(U64::from(3)),
-            ),
-        ];
-        let challenges: Vec<(OpPokeChallengedSuccessfullyFilter, LogMeta)> = vec![(
-            OpPokeChallengedSuccessfullyFilter {
-                ..Default::default()
-            },
-            new_log_meta(U64::from(2)),
-        )];
+            )];
+            let challenges: Vec<(OpPokeChallengedSuccessfullyFilter, LogMeta)> = vec![];
 
-        let result = reject_challenged_pokes(pokes.clone(), challenges);
-        assert_eq!(result.len(), 1);
+            let result = reject_challenged_pokes(pokes.clone(), challenges);
+            assert_eq!(result, pokes);
+        }
 
-        let (_, meta) = result.get(0).unwrap();
-        assert_eq!(meta.block_number, U64::from(3));
-    }
-
-    #[test]
-    fn set_of_pokes_and_challenges() {
-        let pokes: Vec<(OpPokedFilter, LogMeta)> = vec![
-            (
+        {
+            // One poke one challenge after it
+            let pokes: Vec<(OpPokedFilter, LogMeta)> = vec![(
                 OpPokedFilter {
                     ..Default::default()
                 },
                 new_log_meta(U64::from(1)),
-            ),
-            (
-                OpPokedFilter {
-                    ..Default::default()
-                },
-                new_log_meta(U64::from(3)),
-            ),
-            (
-                OpPokedFilter {
-                    ..Default::default()
-                },
-                new_log_meta(U64::from(4)),
-            ),
-            (
-                OpPokedFilter {
-                    ..Default::default()
-                },
-                new_log_meta(U64::from(7)),
-            ),
-        ];
-        let challenges: Vec<(OpPokeChallengedSuccessfullyFilter, LogMeta)> = vec![
-            (
+            )];
+            let challenges: Vec<(OpPokeChallengedSuccessfullyFilter, LogMeta)> = vec![(
                 OpPokeChallengedSuccessfullyFilter {
                     ..Default::default()
                 },
                 new_log_meta(U64::from(2)),
-            ),
-            (
+            )];
+
+            let result = reject_challenged_pokes(pokes, challenges);
+            assert!(result.is_empty());
+        }
+
+        {
+            // One poke one challenge before it
+            let pokes: Vec<(OpPokedFilter, LogMeta)> = vec![(
+                OpPokedFilter {
+                    ..Default::default()
+                },
+                new_log_meta(U64::from(2)),
+            )];
+            let challenges: Vec<(OpPokeChallengedSuccessfullyFilter, LogMeta)> = vec![(
                 OpPokeChallengedSuccessfullyFilter {
                     ..Default::default()
                 },
-                new_log_meta(U64::from(5)),
-            ),
-            (
+                new_log_meta(U64::from(1)),
+            )];
+
+            let result = reject_challenged_pokes(pokes.clone(), challenges);
+            assert_eq!(result, pokes);
+        }
+
+        {
+            // Multi pokes - one challenge after first poke
+            let pokes: Vec<(OpPokedFilter, LogMeta)> = vec![
+                (
+                    OpPokedFilter {
+                        ..Default::default()
+                    },
+                    new_log_meta(U64::from(1)),
+                ),
+                (
+                    OpPokedFilter {
+                        ..Default::default()
+                    },
+                    new_log_meta(U64::from(3)),
+                ),
+            ];
+            let challenges: Vec<(OpPokeChallengedSuccessfullyFilter, LogMeta)> = vec![(
                 OpPokeChallengedSuccessfullyFilter {
                     ..Default::default()
                 },
-                new_log_meta(U64::from(6)),
-            ),
-        ];
+                new_log_meta(U64::from(2)),
+            )];
 
-        let result = reject_challenged_pokes(pokes.clone(), challenges);
-        assert_eq!(result.len(), 2);
+            let result = reject_challenged_pokes(pokes.clone(), challenges);
+            assert_eq!(result.len(), 1);
 
-        let (_, meta) = result.get(0).unwrap();
-        assert_eq!(meta.block_number, U64::from(3));
+            let (_, meta) = result.get(0).unwrap();
+            assert_eq!(meta.block_number, U64::from(3));
+        }
 
-        let (_, meta2) = result.get(1).unwrap();
-        assert_eq!(meta2.block_number, U64::from(7));
+        {
+            // Multi pokes & multi challenges in random order
+            let pokes: Vec<(OpPokedFilter, LogMeta)> = vec![
+                (
+                    OpPokedFilter {
+                        ..Default::default()
+                    },
+                    new_log_meta(U64::from(1)),
+                ),
+                (
+                    OpPokedFilter {
+                        ..Default::default()
+                    },
+                    new_log_meta(U64::from(3)),
+                ),
+                (
+                    OpPokedFilter {
+                        ..Default::default()
+                    },
+                    new_log_meta(U64::from(4)),
+                ),
+                (
+                    OpPokedFilter {
+                        ..Default::default()
+                    },
+                    new_log_meta(U64::from(7)),
+                ),
+            ];
+            let challenges: Vec<(OpPokeChallengedSuccessfullyFilter, LogMeta)> = vec![
+                (
+                    OpPokeChallengedSuccessfullyFilter {
+                        ..Default::default()
+                    },
+                    new_log_meta(U64::from(2)),
+                ),
+                (
+                    OpPokeChallengedSuccessfullyFilter {
+                        ..Default::default()
+                    },
+                    new_log_meta(U64::from(5)),
+                ),
+                (
+                    OpPokeChallengedSuccessfullyFilter {
+                        ..Default::default()
+                    },
+                    new_log_meta(U64::from(6)),
+                ),
+            ];
+
+            let result = reject_challenged_pokes(pokes.clone(), challenges);
+            assert_eq!(result.len(), 2);
+
+            let (_, meta) = result.get(0).unwrap();
+            assert_eq!(meta.block_number, U64::from(3));
+
+            let (_, meta2) = result.get(1).unwrap();
+            assert_eq!(meta2.block_number, U64::from(7));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_challenger_returns_error_on_max_failures() {
+        // Just random address
+        let address = "0x3D4c07Bd3cf5FB80ACB6Ec31531DBB338329b5F5"
+            .parse::<Address>()
+            .unwrap();
+        let max_failures: u8 = 3;
+
+        // Setting up mock
+        let mut mock = MockTestScribe::new();
+        mock.expect_get_latest_block_number()
+            .returning(|| Ok(U64::from(100)));
+
+        mock.expect_get_block().returning(|_| Ok(None));
+
+        mock.expect_get_challenge_period().returning(|_| Ok(600));
+
+        // Let's fail on this function.
+        mock.expect_get_successful_challenges()
+            .times(usize::from(max_failures))
+            .returning(|_, _, _| eyre::bail!("Error challenges"));
+
+        mock.expect_get_op_pokes()
+            .returning(|_, _, _| eyre::bail!("Error op_pokes"));
+
+        // Setting up challenger
+        let mut challenger = Challenger::new(address, mock, Some(10), Some(max_failures));
+
+        let res = challenger.start().await;
+        assert!(res.is_err());
+    }
+
+    #[tokio::test]
+    #[should_panic]
+    async fn test_challenge_period_requires_to_be_fetched() {
+        // Just random address
+        let address = "0x3D4c07Bd3cf5FB80ACB6Ec31531DBB338329b5F5"
+            .parse::<Address>()
+            .unwrap();
+
+        // Setting up mock
+        let mut mock = MockTestScribe::new();
+        mock.expect_get_latest_block_number()
+            .returning(|| Ok(U64::from(100)));
+
+        mock.expect_get_block().returning(|_| Ok(None));
+
+        mock.expect_get_challenge_period()
+            .returning(|_| eyre::bail!("Error get challenge period"));
+
+        // Let's fail on this function.
+        mock.expect_get_successful_challenges()
+            .returning(|_, _, _| Ok(vec![]));
+
+        mock.expect_get_op_pokes().returning(|_, _, _| Ok(vec![]));
+
+        // Setting up challenger
+        let mut challenger = Challenger::new(address, mock, Some(10), None);
+
+        challenger.process().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_no_pokes_no_execution() {
+        // Just random address
+        let address = "0x3D4c07Bd3cf5FB80ACB6Ec31531DBB338329b5F5"
+            .parse::<Address>()
+            .unwrap();
+        let max_failures: u8 = 3;
+
+        // Setting up mock
+        let mut mock = MockTestScribe::new();
+        mock.expect_get_latest_block_number()
+            .returning(|| Ok(U64::from(1000)));
+
+        mock.expect_get_challenge_period().returning(|_| Ok(600));
+        // Let's fail on this function.
+        mock.expect_get_successful_challenges()
+            .returning(|_, _, _| Ok(vec![]));
+        mock.expect_get_op_pokes().returning(|_, _, _| Ok(vec![]));
+        mock.expect_challenge().never();
+
+        mock.expect_get_block().never();
+
+        // Setting up challenger
+        let mut challenger = Challenger::new(address, mock, Some(10), Some(max_failures));
+
+        let res = challenger.process().await;
+        assert!(res.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_calls_challenge_on_invalid_signature() {
+        // Just random address
+        let address = "0x3D4c07Bd3cf5FB80ACB6Ec31531DBB338329b5F5"
+            .parse::<Address>()
+            .unwrap();
+        let max_failures: u8 = 3;
+
+        // Setting up mock
+        let mut mock = MockTestScribe::new();
+        mock.expect_get_latest_block_number()
+            .returning(|| Ok(U64::from(1000)));
+
+        mock.expect_get_challenge_period().returning(|_| Ok(600));
+        // Let's fail on this function.
+        mock.expect_get_successful_challenges()
+            .returning(|_, _, _| Ok(vec![]));
+
+        mock.expect_get_op_pokes().returning(|_, _, _| {
+            Ok(vec![(
+                OpPokedFilter {
+                    ..Default::default()
+                },
+                new_log_meta(U64::from(999)),
+            )])
+        });
+        mock.expect_is_schnorr_signature_valid()
+            .once()
+            .returning(|_| Ok(false));
+        // Called only once !
+        mock.expect_challenge().once().returning(|_| Ok(None));
+
+        mock.expect_get_block().returning(|_| {
+            Ok(Some(Block {
+                timestamp: U256::from(Utc::now().timestamp()),
+                ..Default::default()
+            }))
+        });
+
+        // Setting up challenger
+        let mut challenger = Challenger::new(address, mock, Some(10), Some(max_failures));
+
+        let res = challenger.process().await;
+        assert!(res.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_ignores_challenge_on_valid_signature() {
+        // Just random address
+        let address = "0x3D4c07Bd3cf5FB80ACB6Ec31531DBB338329b5F5"
+            .parse::<Address>()
+            .unwrap();
+        let max_failures: u8 = 3;
+
+        // Setting up mock
+        let mut mock = MockTestScribe::new();
+        mock.expect_get_latest_block_number()
+            .returning(|| Ok(U64::from(1000)));
+
+        mock.expect_get_challenge_period().returning(|_| Ok(600));
+        // Let's fail on this function.
+        mock.expect_get_successful_challenges()
+            .returning(|_, _, _| Ok(vec![]));
+
+        mock.expect_get_op_pokes().returning(|_, _, _| {
+            Ok(vec![(
+                OpPokedFilter {
+                    ..Default::default()
+                },
+                new_log_meta(U64::from(999)),
+            )])
+        });
+        mock.expect_is_schnorr_signature_valid()
+            .once()
+            .returning(|_| Ok(true));
+        // Never called
+        mock.expect_challenge().never();
+
+        mock.expect_get_block().returning(|_| {
+            Ok(Some(Block {
+                timestamp: U256::from(Utc::now().timestamp()),
+                ..Default::default()
+            }))
+        });
+
+        // Setting up challenger
+        let mut challenger = Challenger::new(address, mock, Some(10), Some(max_failures));
+
+        let res = challenger.process().await;
+        assert!(res.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_blocks_older_than_challenge_period_are_ignored() {
+        // Just random address
+        let address = "0x3D4c07Bd3cf5FB80ACB6Ec31531DBB338329b5F5"
+            .parse::<Address>()
+            .unwrap();
+        let max_failures: u8 = 3;
+
+        // Setting up mock
+        let mut mock = MockTestScribe::new();
+        mock.expect_get_latest_block_number()
+            .returning(|| Ok(U64::from(1000)));
+
+        mock.expect_get_challenge_period().returning(|_| Ok(600));
+        // Let's fail on this function.
+        mock.expect_get_successful_challenges()
+            .returning(|_, _, _| Ok(vec![]));
+
+        mock.expect_get_op_pokes().returning(|_, _, _| {
+            Ok(vec![(
+                OpPokedFilter {
+                    ..Default::default()
+                },
+                new_log_meta(U64::from(999)),
+            )])
+        });
+        // Never called, due to expired timestamp for poke
+        mock.expect_is_schnorr_signature_valid()
+            .never()
+            .returning(|_| Ok(true));
+        // Never called
+        mock.expect_challenge().never();
+
+        // Returning block older than `get_challenge_period`
+        mock.expect_get_block().once().returning(|_| {
+            Ok(Some(Block {
+                timestamp: U256::from(Utc::now().timestamp() - 601),
+                ..Default::default()
+            }))
+        });
+
+        // Setting up challenger
+        let mut challenger = Challenger::new(address, mock, Some(10), Some(max_failures));
+
+        let res = challenger.process().await;
+        assert!(res.is_ok());
     }
 }
