@@ -15,6 +15,7 @@
 
 use ethers::signers::LocalWallet;
 use eyre::{bail, Result, WrapErr};
+use log::debug;
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -25,6 +26,8 @@ pub trait PrivateKeyWallet {
 
     #[track_caller]
     fn get_from_private_key(&self, private_key: &str) -> Result<Option<LocalWallet>> {
+        debug!("Using private key from arguments");
+
         let privk = private_key.trim().strip_prefix("0x").unwrap_or(private_key);
         match privk.parse::<LocalWallet>() {
             Ok(wallet) => Ok(Some(wallet)),
@@ -77,6 +80,9 @@ pub trait KeystoreWallet {
             match (keystore_path, keystore_password, keystore_password_file) {
                 (Some(path), Some(password), _) => {
                     let path = self.find_keystore_file(path)?;
+
+                    debug!("Using Keystore file from `{path:?}` and raw password");
+
                     Some(
                         LocalWallet::decrypt_keystore(&path, password)
                             .wrap_err_with(|| format!("Failed to decrypt keystore {path:?}"))?,
@@ -84,13 +90,21 @@ pub trait KeystoreWallet {
                 }
                 (Some(path), _, Some(password_file)) => {
                     let path = self.find_keystore_file(path)?;
+
+                    debug!("Using Keystore file from `{path:?}` and password from file");
+
                     Some(
-                    LocalWallet::decrypt_keystore(&path, self.password_from_file(password_file)?)
-                        .wrap_err_with(|| format!("Failed to decrypt keystore {path:?} with password file {password_file:?}"))?,
-                )
+                        LocalWallet::decrypt_keystore(&path, self.password_from_file(password_file)?)
+                            .wrap_err_with(|| format!("Failed to decrypt keystore {path:?} with password file {password_file:?}"))?,
+                    )
                 }
                 (Some(path), None, None) => {
                     let path = self.find_keystore_file(path)?;
+
+                    debug!(
+                        "Using Keystore file from `{path:?}` and password from interactive prompt"
+                    );
+
                     let password = rpassword::prompt_password("Enter keystore password:")?;
                     Some(LocalWallet::decrypt_keystore(path, password)?)
                 }

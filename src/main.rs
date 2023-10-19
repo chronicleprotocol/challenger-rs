@@ -23,14 +23,16 @@ use ethers::{
 };
 use eyre::Result;
 use log::{debug, error, info};
+use std::panic;
 use std::sync::Arc;
 
-mod challenger;
 mod wallet;
-use challenger::Challenger;
+
+use challenger_lib::contract::HttpScribeOptimisticProvider;
+use challenger_lib::Challenger;
+
 use tokio::signal;
-use tokio::sync::mpsc::channel;
-use tokio_util::sync::CancellationToken;
+use tokio::task::JoinSet;
 
 use wallet::{CustomWallet, KeystoreWallet, PrivateKeyWallet};
 
@@ -105,10 +107,12 @@ async fn main() -> Result<()> {
 
     let provider = Provider::<Http>::try_from(args.rpc_url.as_str())?;
 
+    debug!("Connected to {:?}", provider.url());
     let chain_id = args
         .chain_id
         .unwrap_or(provider.get_chainid().await?.as_u64());
 
+    debug!("Chain id: {:?}", chain_id);
     // Generating signer from given private key
     let signer = args.wallet()?.unwrap().with_chain_id(chain_id);
 
@@ -120,44 +124,41 @@ async fn main() -> Result<()> {
 
     let client = Arc::new(SignerMiddleware::new(provider, signer));
 
-    let token = CancellationToken::new();
-    let (send, mut recv) = channel(args.addresses.len());
+    let mut set = JoinSet::new();
 
     for address in &args.addresses {
         let address = address.parse::<Address>()?;
 
         let client_clone = client.clone();
-        let send_clone = send.clone();
-        let token_clone = token.clone();
-
-        tokio::spawn(async move {
+        set.spawn(async move {
             info!("Address {:?} starting monitoring opPokes", address);
 
-            let mut challenger = Challenger::new(address, client_clone);
+            let contract_provider = HttpScribeOptimisticProvider::new(address, client_clone);
+            let mut challenger = Challenger::new(address, contract_provider, None, None);
 
-            challenger.start(send_clone, token_clone).await
+            challenger.start().await
         });
     }
-
-    // Wait for the tasks to finish.
-    //
-    // We drop our sender first because the recv() call otherwise
-    // sleeps forever.
-    drop(send);
 
     tokio::select! {
         _ = signal::ctrl_c() => {
             info!("Received Ctrl-C, shutting down");
-            token.cancel();
-
-            // Waiting for all tasks to finish
-            recv.recv().await;
         },
 
-        _ = recv.recv() => {
-            info!("Tasks finished, shutting down");
+        // some process terminated, no need to wait for others
+        res = set.join_next() => {
+            match res.unwrap() {
+                Ok(_) => info!("Task terminated without error, shutting down"),
+                Err(e) => {
+                    error!("Task terminated with error: {:#?}", e.to_string());
+                },
+            }
         },
     }
+
+    // Terminating all remaining tasks
+    set.shutdown().await;
+
     Ok(())
 }
 

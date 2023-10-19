@@ -1,18 +1,12 @@
 [package]
-name = "challenger"
+name = "challenger-lib"
 version = "0.1.0"
 edition = "2021"
 
-[workspace]
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
-[workspace.dependencies]
-challenger-lib = { path = "challenger" }
+[lib]
+doctest = false
 
 [dependencies]
-challenger-lib.workspace = true
-
 ethers = "2.0"
 tokio = { version = "1", features = ["full"] }
 hex-literal = "0.4.1"
@@ -27,3 +21,6 @@ rpassword = "7.2.0"
 lazy_static = "1.4.0"
 tokio-util = "0.7.9"
 async-trait = "0.1.73"
+
+[dev-dependencies]
+mockall = "0.11.2"
