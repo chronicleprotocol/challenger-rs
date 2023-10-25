@@ -94,7 +94,7 @@ where
         Ok(())
     }
 
-    // Reloads challenge period value if it was not pulled from contract or pulled more than 10 mins ago.
+    // Reloads the challenge period from the contract if it has not been updated within the default challenge period reload interval.
     async fn reload_challenge_period_if_needed(&mut self) -> Result<()> {
         let need_update = match self.challenge_period_last_updated_at {
             None => true,
@@ -238,7 +238,34 @@ where
         Ok(())
     }
 
-    /// Start address processing
+    /// Starts processing pokes for the given contract address using the specified provider and tick interval.
+    ///
+    /// The function uses a tokio::time::interval to run the process method at regular intervals specified by the tick_interval field.
+    ///
+    /// # Used arguments
+    ///
+    /// * `contract_address` - The address of the contract to process pokes for.
+    /// * `provider` - The provider to use for interacting with the Ethereum network.
+    /// * `tick_interval` - The interval at which to check for new pokes.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use eyre::Result;
+    /// use ethers::providers::{Http, Provider};
+    /// use challenger::{Challenger, HttpScribeOptimisticProvider};
+    /// use std::time::Duration;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<()> {
+    ///     let rpc_provider = Provider::<Http>::connect("https://mainnet.infura.io/v3/your-project-id").await?;
+    ///     let contract_address = "0x1234567890123456789012345678901234567890".parse()?;
+    ///     let provider = HttpScribeOptimisticProvider::new(contract_address, rpc_provider);
+    ///     let mut challenger = Challenger::new(contract_address, provider, Duration::from_secs(30), None);
+    ///
+    ///     challenger.start().await?
+    /// }
+    /// ```
     pub async fn start(&mut self) -> Result<()> {
         let mut interval = time::interval(self.tick_interval);
 
