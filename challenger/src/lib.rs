@@ -313,38 +313,15 @@ fn reject_challenged_pokes(
     }
     let mut result: Vec<(OpPokedFilter, LogMeta)> = vec![];
 
-    if pokes.len() == 1 {
-        let (_, meta) = &pokes[0];
-        for (_, c_meta) in challenges.clone() {
-            if c_meta.block_number > meta.block_number {
-                // empty result
-                return result;
+    'pokes: for (poke, meta) in pokes.clone() {
+        for (challenge, _) in challenges.clone() {
+            // Poke is already challenged if `OpPokeChallengedSuccessfully` event has same `schnorrData` to `OpPoked` event
+            if poke.schnorr_data == challenge.schnorr_data {
+                // poke already challenged
+                continue 'pokes;
             }
         }
-        return pokes;
-    }
-
-    'pokes_loop: for i in 0..pokes.len() {
-        let (poke, meta) = &pokes.get(i).unwrap();
-        // If we do have next poke in list
-        if let Some((_, next_meta)) = &pokes.get(i + 1) {
-            for (_, c_meta) in challenges.clone() {
-                if meta.block_number < c_meta.block_number
-                    && next_meta.block_number > c_meta.block_number
-                {
-                    // poke already challenged
-                    continue 'pokes_loop;
-                }
-            }
-        } else {
-            for (_, c_meta) in challenges.clone() {
-                if c_meta.block_number > meta.block_number {
-                    // poke already challenged
-                    continue 'pokes_loop;
-                }
-            }
-        }
-        result.push((poke.clone(), meta.clone()));
+        result.push((poke, meta));
     }
 
     result
@@ -358,10 +335,11 @@ mod tests {
     use contract::SchnorrData;
     use ethers::{
         contract::LogMeta,
-        types::{Address, Block, TransactionReceipt, H160, H256, U256, U64},
+        types::{Address, Block, Bytes, TransactionReceipt, H160, H256, U256, U64},
     };
     use eyre::Result;
     use mockall::{mock, predicate::*};
+    use std::str::FromStr;
 
     mock! {
         pub TestScribe{}
@@ -406,6 +384,15 @@ mod tests {
         }
     }
 
+    // Generates new random schnorr data struct.
+    fn random_schnorr_data(feed_id: &str) -> SchnorrData {
+        SchnorrData {
+            commitment: H160::random(),
+            signature: [0; 32],
+            feed_ids: Bytes::from_str(feed_id).unwrap(),
+        }
+    }
+
     #[test]
     fn test_reject_challenged_pokes() {
         {
@@ -422,6 +409,7 @@ mod tests {
             // Only 1 poke - returns it back
             let pokes: Vec<(OpPokedFilter, LogMeta)> = vec![(
                 OpPokedFilter {
+                    schnorr_data: random_schnorr_data("0x1213"),
                     ..Default::default()
                 },
                 new_log_meta(U64::from(1)),
@@ -433,15 +421,18 @@ mod tests {
         }
 
         {
+            let schnorr_data = random_schnorr_data("0x1213");
             // One poke one challenge after it
             let pokes: Vec<(OpPokedFilter, LogMeta)> = vec![(
                 OpPokedFilter {
+                    schnorr_data: schnorr_data.clone(),
                     ..Default::default()
                 },
                 new_log_meta(U64::from(1)),
             )];
             let challenges: Vec<(OpPokeChallengedSuccessfullyFilter, LogMeta)> = vec![(
                 OpPokeChallengedSuccessfullyFilter {
+                    schnorr_data: schnorr_data.clone(),
                     ..Default::default()
                 },
                 new_log_meta(U64::from(2)),
@@ -455,12 +446,14 @@ mod tests {
             // One poke one challenge before it
             let pokes: Vec<(OpPokedFilter, LogMeta)> = vec![(
                 OpPokedFilter {
+                    schnorr_data: random_schnorr_data("0x1213"),
                     ..Default::default()
                 },
                 new_log_meta(U64::from(2)),
             )];
             let challenges: Vec<(OpPokeChallengedSuccessfullyFilter, LogMeta)> = vec![(
                 OpPokeChallengedSuccessfullyFilter {
+                    schnorr_data: random_schnorr_data("0x1213"),
                     ..Default::default()
                 },
                 new_log_meta(U64::from(1)),
@@ -471,10 +464,12 @@ mod tests {
         }
 
         {
+            let schnorr_data = random_schnorr_data("0x1213");
             // Multi pokes - one challenge after first poke
             let pokes: Vec<(OpPokedFilter, LogMeta)> = vec![
                 (
                     OpPokedFilter {
+                        schnorr_data: schnorr_data.clone(),
                         ..Default::default()
                     },
                     new_log_meta(U64::from(1)),
@@ -488,6 +483,7 @@ mod tests {
             ];
             let challenges: Vec<(OpPokeChallengedSuccessfullyFilter, LogMeta)> = vec![(
                 OpPokeChallengedSuccessfullyFilter {
+                    schnorr_data: schnorr_data.clone(),
                     ..Default::default()
                 },
                 new_log_meta(U64::from(2)),
@@ -501,28 +497,36 @@ mod tests {
         }
 
         {
+            let schnorr1 = random_schnorr_data("0x1213");
+            let schnorr2 = random_schnorr_data("0x121314");
+            let schnorr3 = random_schnorr_data("0x121315");
+            let schnorr4 = random_schnorr_data("0x121316");
             // Multi pokes & multi challenges in random order
             let pokes: Vec<(OpPokedFilter, LogMeta)> = vec![
                 (
                     OpPokedFilter {
+                        schnorr_data: schnorr1.clone(),
                         ..Default::default()
                     },
                     new_log_meta(U64::from(1)),
                 ),
                 (
                     OpPokedFilter {
+                        schnorr_data: schnorr2.clone(),
                         ..Default::default()
                     },
                     new_log_meta(U64::from(3)),
                 ),
                 (
                     OpPokedFilter {
+                        schnorr_data: schnorr3.clone(),
                         ..Default::default()
                     },
                     new_log_meta(U64::from(4)),
                 ),
                 (
                     OpPokedFilter {
+                        schnorr_data: schnorr4.clone(),
                         ..Default::default()
                     },
                     new_log_meta(U64::from(7)),
@@ -531,18 +535,21 @@ mod tests {
             let challenges: Vec<(OpPokeChallengedSuccessfullyFilter, LogMeta)> = vec![
                 (
                     OpPokeChallengedSuccessfullyFilter {
+                        schnorr_data: schnorr1.clone(),
                         ..Default::default()
                     },
                     new_log_meta(U64::from(2)),
                 ),
                 (
                     OpPokeChallengedSuccessfullyFilter {
+                        schnorr_data: schnorr3.clone(),
                         ..Default::default()
                     },
                     new_log_meta(U64::from(5)),
                 ),
                 (
                     OpPokeChallengedSuccessfullyFilter {
+                        schnorr_data: random_schnorr_data("0x121317"),
                         ..Default::default()
                     },
                     new_log_meta(U64::from(6)),
