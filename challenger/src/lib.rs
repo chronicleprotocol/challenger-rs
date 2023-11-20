@@ -492,7 +492,7 @@ mod tests {
             let result = reject_challenged_pokes(pokes.clone(), challenges);
             assert_eq!(result.len(), 1);
 
-            let (_, meta) = result.get(0).unwrap();
+            let (_, meta) = result.first().unwrap();
             assert_eq!(meta.block_number, U64::from(3));
         }
 
@@ -559,7 +559,7 @@ mod tests {
             let result = reject_challenged_pokes(pokes.clone(), challenges);
             assert_eq!(result.len(), 2);
 
-            let (_, meta) = result.get(0).unwrap();
+            let (_, meta) = result.first().unwrap();
             assert_eq!(meta.block_number, U64::from(3));
 
             let (_, meta2) = result.get(1).unwrap();
