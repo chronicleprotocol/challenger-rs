@@ -61,6 +61,9 @@ pub trait ScribeOptimisticProvider: Send + Sync {
 
     /// Challenges given `OpPoked` event.
     async fn challenge(&self, schnorr_data: SchnorrData) -> Result<Option<TransactionReceipt>>;
+
+    /// Returns the from account address.
+    fn get_from(&self) -> Option<Address>;
 }
 
 #[derive(Debug)]
@@ -88,6 +91,10 @@ where
     M: 'static,
     M::Error: 'static,
 {
+    fn get_from(&self) -> Option<Address> {
+        self.client.default_sender()
+    }
+
     /// Returns the latest block number from RPC.
     async fn get_latest_block_number(&self) -> Result<U64> {
         self.client

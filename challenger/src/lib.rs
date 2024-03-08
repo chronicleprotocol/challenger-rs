@@ -19,13 +19,16 @@ use ethers::{
     core::types::{Address, U64},
 };
 use eyre::Result;
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use std::time::Duration;
 use tokio::time;
 
 pub mod contract;
+pub mod metrics;
 
 use contract::{OpPokeChallengedSuccessfullyFilter, OpPokedFilter, ScribeOptimisticProvider};
+
+use crate::metrics::{ERRORS_COUNTER, LAST_SCANNED_BLOCK_GAUGE};
 
 // Note: this is true virtually all of the time but because of leap seconds not always.
 // We take minimal time just to be sure, it's always better to check outdated blocks
@@ -165,6 +168,18 @@ where
         // Updating last processed block with latest chain block
         self.last_processed_block = Some(latest_block_number);
 
+        // Updating last scanned block metric
+        LAST_SCANNED_BLOCK_GAUGE
+            .with_label_values(&[
+                &self.address.to_string(),
+                &self
+                    .contract_provider
+                    .get_from()
+                    .unwrap_or_default()
+                    .to_string(),
+            ])
+            .set(latest_block_number.as_u64() as i64);
+
         // Fetch list of `OpPokeChallengedSuccessfully` events
         let challenges = self
             .contract_provider
@@ -221,10 +236,29 @@ where
                 // TODO: handle error gracefully, we should go further even if error happened
                 match self.contract_provider.challenge(log.schnorr_data).await {
                     Ok(receipt) => {
-                        info!(
-                            "Address {:?}, successfully sent `opChallenge` transaction {:?}",
-                            self.address, receipt
-                        );
+                        if let Some(receipt) = receipt {
+                            info!(
+                                "Address {:?}, successfully sent `opChallenge` transaction {:?}",
+                                self.address, receipt
+                            );
+                            // Add challenge to metrics
+                            LAST_SCANNED_BLOCK_GAUGE
+                                .with_label_values(&[
+                                    &self.address.to_string(),
+                                    &self
+                                        .contract_provider
+                                        .get_from()
+                                        .unwrap_or_default()
+                                        .to_string(),
+                                    &receipt.transaction_hash.to_string(),
+                                ])
+                                .inc();
+                        } else {
+                            warn!(
+                                "Address {:?}, successfully sent `opChallenge` transaction but no receipt returned",
+                                self.address
+                            );
+                        }
                     }
                     Err(err) => {
                         error!(
@@ -282,6 +316,18 @@ where
                         "Address {:?}, failed to process opPokes: {:?}",
                         self.address, err
                     );
+
+                    ERRORS_COUNTER
+                        .with_label_values(&[
+                            &self.address.to_string(),
+                            &self
+                                .contract_provider
+                                .get_from()
+                                .unwrap_or_default()
+                                .to_string(),
+                            &err.to_string(),
+                        ])
+                        .inc();
 
                     // Increment and check error counter
                     self.failure_count += 1;
@@ -391,6 +437,8 @@ mod tests {
             async fn is_schnorr_signature_valid(&self, op_poked: OpPokedFilter) -> Result<bool>;
 
             async fn challenge(&self, schnorr_data: SchnorrData) -> Result<Option<TransactionReceipt>>;
+
+            fn get_from(&self) -> Option<Address>;
         }
     }
 

@@ -28,8 +28,8 @@ use std::sync::Arc;
 
 mod wallet;
 
-use challenger_lib::contract::HttpScribeOptimisticProvider;
-use challenger_lib::Challenger;
+use challenger_lib::{contract::HttpScribeOptimisticProvider, metrics::ERRORS_COUNTER};
+use challenger_lib::{metrics, Challenger};
 
 use tokio::signal;
 use tokio::task::JoinSet;
@@ -122,6 +122,7 @@ async fn main() -> Result<()> {
         signer.chain_id()
     );
 
+    let signer_address = signer.address();
     let client = Arc::new(SignerMiddleware::new(provider, signer));
 
     let mut set = JoinSet::new();
@@ -136,9 +137,29 @@ async fn main() -> Result<()> {
             let contract_provider = HttpScribeOptimisticProvider::new(address, client_clone);
             let mut challenger = Challenger::new(address, contract_provider, None, None);
 
-            challenger.start().await
+            let res = challenger.start().await;
+            // Check and add error into metrics
+            if res.is_err() {
+                ERRORS_COUNTER
+                    .with_label_values(&[
+                        &address.to_string(),
+                        &signer_address.to_string(),
+                        &res.err().unwrap().to_string(),
+                    ])
+                    .inc();
+            }
         });
     }
+
+    // TODO: Start HTTP server for `:9090/metrics`
+    set.spawn(async move {
+        metrics::register_custom_metrics();
+        // metrics::handle_metrics().await;
+        // println!("Started on port 8080");
+        // warp::serve(metrics_route.or(some_route).or(ws_route))
+        //     .run(([0, 0, 0, 0], 8080))
+        //     .await;
+    });
 
     tokio::select! {
         _ = signal::ctrl_c() => {
