@@ -396,7 +396,6 @@ dependencies = [
  "prometheus",
  "tokio",
  "tokio-util",
- "warp",
 ]
 
 [[package]]

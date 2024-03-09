@@ -1,6 +1,6 @@
+use eyre::{Context, Result};
 use lazy_static::lazy_static;
 use prometheus::{IntCounterVec, IntGaugeVec, Opts, Registry};
-use warp::{reject::Rejection, reply::Reply};
 
 lazy_static! {
     pub static ref REGISTRY: Registry =
@@ -39,36 +39,28 @@ pub fn register_custom_metrics() {
         .expect("collector can be registered");
 }
 
-pub async fn metrics_handler() -> Result<impl Reply, Rejection> {
+pub fn as_encoded_string() -> Result<String> {
     use prometheus::Encoder;
     let encoder = prometheus::TextEncoder::new();
 
     // Collect and encode custom metrics from `REGISTRY`
     let mut buffer = Vec::new();
-    if let Err(e) = encoder.encode(&REGISTRY.gather(), &mut buffer) {
-        eprintln!("could not encode custom metrics: {}", e);
-    };
-    let mut res = match String::from_utf8(buffer.clone()) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("custom metrics could not be from_utf8'd: {}", e);
-            String::default()
-        }
-    };
+    encoder
+        .encode(&REGISTRY.gather(), &mut buffer)
+        .wrap_err("Failed to encode REGISTRY metrics")?;
+
+    let mut res = String::from_utf8(buffer.clone())
+        .wrap_err("Failed to convert REGISTRY metrics from utf8")?;
     buffer.clear();
 
     // Collect and encode prometheus metrics from `prometheus::gather()`
     let mut buffer = Vec::new();
-    if let Err(e) = encoder.encode(&prometheus::gather(), &mut buffer) {
-        eprintln!("could not encode prometheus metrics: {}", e);
-    };
-    let res_custom = match String::from_utf8(buffer.clone()) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("prometheus metrics could not be from_utf8'd: {}", e);
-            String::default()
-        }
-    };
+    encoder
+        .encode(&prometheus::gather(), &mut buffer)
+        .wrap_err("Failed to encode prometheus metrics")?;
+
+    let res_custom = String::from_utf8(buffer.clone())
+        .wrap_err("Failed to convert prometheus metrics from utf8")?;
     buffer.clear();
 
     res.push_str(&res_custom);

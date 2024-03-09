@@ -22,9 +22,9 @@ use ethers::{
     signers::Signer,
 };
 use eyre::Result;
-use log::{debug, error, info};
-use std::panic;
+use log::{error, info};
 use std::sync::Arc;
+use std::{env, panic};
 
 mod wallet;
 
@@ -35,7 +35,7 @@ use tokio::signal;
 use tokio::task::JoinSet;
 
 use wallet::{CustomWallet, KeystoreWallet, PrivateKeyWallet};
-use warp::Filter;
+use warp::{reject::Rejection, reply::Reply, Filter};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
@@ -128,7 +128,11 @@ async fn main() -> Result<()> {
 
     let mut set = JoinSet::new();
 
-    for address in &args.addresses {
+    // Removing duplicates from list of provided addresses
+    let mut addresses = args.addresses;
+    addresses.dedup();
+
+    for address in &addresses {
         let address = address.parse::<Address>()?;
 
         let client_clone = client.clone();
@@ -156,10 +160,14 @@ async fn main() -> Result<()> {
     set.spawn(async move {
         metrics::register_custom_metrics();
 
-        let metrics_route = warp::path!("metrics").and_then(metrics::metrics_handler);
+        let metrics_route = warp::path!("metrics").and_then(metrics_handle);
         let health_route = warp::path!("health").map(|| warp::reply::json(&"OK"));
 
-        let port = 9090;
+        let port = env::var("HTTP_PORT")
+            .unwrap_or(String::from("9090"))
+            .parse::<u16>()
+            .unwrap();
+
         info!("Starting HTTP server on port {}", port);
         warp::serve(metrics_route.or(health_route))
             .run(([0, 0, 0, 0], port))
@@ -186,6 +194,16 @@ async fn main() -> Result<()> {
     set.shutdown().await;
 
     Ok(())
+}
+
+async fn metrics_handle() -> Result<impl Reply, Rejection> {
+    match metrics::as_encoded_string() {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            error!("could not encode custom metrics: {}", e);
+            Ok(String::default())
+        }
+    }
 }
 
 #[cfg(test)]
