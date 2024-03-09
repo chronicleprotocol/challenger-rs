@@ -437,8 +437,6 @@ mod tests {
             async fn is_schnorr_signature_valid(&self, op_poked: OpPokedFilter) -> Result<bool>;
 
             async fn challenge(&self, schnorr_data: SchnorrData) -> Result<Option<TransactionReceipt>>;
-
-            fn get_from(&self) -> Option<Address>;
         }
     }
 

@@ -22,7 +22,7 @@ use ethers::{
     types::{Address, Block, TransactionReceipt, ValueOrArray, H256, U64},
 };
 use eyre::{Result, WrapErr};
-use log::debug;
+use log::{debug, warn};
 
 // Yes it generates smart contract code based on given ABI
 abigen!(ScribeOptimistic, "./abi/ScribeOptimistic.json");
@@ -63,7 +63,12 @@ pub trait ScribeOptimisticProvider: Send + Sync {
     async fn challenge(&self, schnorr_data: SchnorrData) -> Result<Option<TransactionReceipt>>;
 
     /// Returns the from account address.
-    fn get_from(&self) -> Option<Address>;
+    fn get_from(&self) -> Option<Address> {
+        warn!(
+            "get_from() uses default sender address, it's not recommended to use it in production"
+        );
+        Some(Address::zero())
+    }
 }
 
 #[derive(Debug)]
