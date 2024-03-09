@@ -35,6 +35,7 @@ use tokio::signal;
 use tokio::task::JoinSet;
 
 use wallet::{CustomWallet, KeystoreWallet, PrivateKeyWallet};
+use warp::Filter;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
@@ -107,16 +108,16 @@ async fn main() -> Result<()> {
 
     let provider = Provider::<Http>::try_from(args.rpc_url.as_str())?;
 
-    debug!("Connected to {:?}", provider.url());
+    info!("Connected to {:?}", provider.url());
     let chain_id = args
         .chain_id
         .unwrap_or(provider.get_chainid().await?.as_u64());
 
-    debug!("Chain id: {:?}", chain_id);
+    info!("Chain id: {:?}", chain_id);
     // Generating signer from given private key
     let signer = args.wallet()?.unwrap().with_chain_id(chain_id);
 
-    debug!(
+    info!(
         "Using {:?} for signing and chain_id {:?}",
         signer.address(),
         signer.chain_id()
@@ -154,11 +155,15 @@ async fn main() -> Result<()> {
     // TODO: Start HTTP server for `:9090/metrics`
     set.spawn(async move {
         metrics::register_custom_metrics();
-        // metrics::handle_metrics().await;
-        // println!("Started on port 8080");
-        // warp::serve(metrics_route.or(some_route).or(ws_route))
-        //     .run(([0, 0, 0, 0], 8080))
-        //     .await;
+
+        let metrics_route = warp::path!("metrics").and_then(metrics::metrics_handler);
+        let health_route = warp::path!("health").map(|| warp::reply::json(&"OK"));
+
+        let port = 9090;
+        info!("Starting HTTP server on port {}", port);
+        warp::serve(metrics_route.or(health_route))
+            .run(([0, 0, 0, 0], port))
+            .await;
     });
 
     tokio::select! {
