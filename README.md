@@ -114,3 +114,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+## Metrics & Health checks
+
+By default challenger exposes metrics and health checks on `:9090/metrics` route.
+Metrics are exposed in prometheus format and health checks are exposed in json format.
+
+Health check route is `:9090/health`.
+
+`HTTP_PORT` env variable can be used to change the port.
+Example: `HTTP_PORT=8080` will expose metrics on `:8080/metrics` and health checks on `:8080/health`.

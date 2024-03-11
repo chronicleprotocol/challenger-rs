@@ -22,19 +22,20 @@ use ethers::{
     signers::Signer,
 };
 use eyre::Result;
-use log::{debug, error, info};
-use std::panic;
+use log::{error, info};
 use std::sync::Arc;
+use std::{env, panic};
 
 mod wallet;
 
-use challenger_lib::contract::HttpScribeOptimisticProvider;
-use challenger_lib::Challenger;
+use challenger_lib::{contract::HttpScribeOptimisticProvider, metrics::ERRORS_COUNTER};
+use challenger_lib::{metrics, Challenger};
 
 use tokio::signal;
 use tokio::task::JoinSet;
 
 use wallet::{CustomWallet, KeystoreWallet, PrivateKeyWallet};
+use warp::{reject::Rejection, reply::Reply, Filter};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
@@ -107,26 +108,31 @@ async fn main() -> Result<()> {
 
     let provider = Provider::<Http>::try_from(args.rpc_url.as_str())?;
 
-    debug!("Connected to {:?}", provider.url());
+    info!("Connected to {:?}", provider.url());
     let chain_id = args
         .chain_id
         .unwrap_or(provider.get_chainid().await?.as_u64());
 
-    debug!("Chain id: {:?}", chain_id);
+    info!("Chain id: {:?}", chain_id);
     // Generating signer from given private key
     let signer = args.wallet()?.unwrap().with_chain_id(chain_id);
 
-    debug!(
+    info!(
         "Using {:?} for signing and chain_id {:?}",
         signer.address(),
         signer.chain_id()
     );
 
+    let signer_address = signer.address();
     let client = Arc::new(SignerMiddleware::new(provider, signer));
 
     let mut set = JoinSet::new();
 
-    for address in &args.addresses {
+    // Removing duplicates from list of provided addresses
+    let mut addresses = args.addresses;
+    addresses.dedup();
+
+    for address in &addresses {
         let address = address.parse::<Address>()?;
 
         let client_clone = client.clone();
@@ -136,9 +142,37 @@ async fn main() -> Result<()> {
             let contract_provider = HttpScribeOptimisticProvider::new(address, client_clone);
             let mut challenger = Challenger::new(address, contract_provider, None, None);
 
-            challenger.start().await
+            let res = challenger.start().await;
+            // Check and add error into metrics
+            if res.is_err() {
+                ERRORS_COUNTER
+                    .with_label_values(&[
+                        &address.to_string(),
+                        &signer_address.to_string(),
+                        &res.err().unwrap().to_string(),
+                    ])
+                    .inc();
+            }
         });
     }
+
+    // TODO: Start HTTP server for `:9090/metrics`
+    set.spawn(async move {
+        metrics::register_custom_metrics();
+
+        let metrics_route = warp::path!("metrics").and_then(metrics_handle);
+        let health_route = warp::path!("health").map(|| warp::reply::json(&"OK"));
+
+        let port = env::var("HTTP_PORT")
+            .unwrap_or(String::from("9090"))
+            .parse::<u16>()
+            .unwrap();
+
+        info!("Starting HTTP server on port {}", port);
+        warp::serve(metrics_route.or(health_route))
+            .run(([0, 0, 0, 0], port))
+            .await;
+    });
 
     tokio::select! {
         _ = signal::ctrl_c() => {
@@ -160,6 +194,16 @@ async fn main() -> Result<()> {
     set.shutdown().await;
 
     Ok(())
+}
+
+async fn metrics_handle() -> Result<impl Reply, Rejection> {
+    match metrics::as_encoded_string() {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            error!("could not encode custom metrics: {}", e);
+            Ok(String::default())
+        }
+    }
 }
 
 #[cfg(test)]
