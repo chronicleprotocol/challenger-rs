@@ -147,8 +147,8 @@ async fn main() -> Result<()> {
             if res.is_err() {
                 ERRORS_COUNTER
                     .with_label_values(&[
-                        &address.to_string(),
-                        &signer_address.to_string(),
+                        &format!("{:?}", address),
+                        &format!("{:?}", signer_address),
                         &res.err().unwrap().to_string(),
                     ])
                     .inc();

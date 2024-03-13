@@ -28,7 +28,7 @@ pub mod metrics;
 
 use contract::{OpPokeChallengedSuccessfullyFilter, OpPokedFilter, ScribeOptimisticProvider};
 
-use crate::metrics::{ERRORS_COUNTER, LAST_SCANNED_BLOCK_GAUGE};
+use crate::metrics::{CHALLENGE_COUNTER, ERRORS_COUNTER, LAST_SCANNED_BLOCK_GAUGE};
 
 // Note: this is true virtually all of the time but because of leap seconds not always.
 // We take minimal time just to be sure, it's always better to check outdated blocks
@@ -171,12 +171,11 @@ where
         // Updating last scanned block metric
         LAST_SCANNED_BLOCK_GAUGE
             .with_label_values(&[
-                &self.address.to_string(),
-                &self
-                    .contract_provider
-                    .get_from()
-                    .unwrap_or_default()
-                    .to_string(),
+                &format!("{:?}", self.address),
+                &format!(
+                    "{:?}",
+                    self.contract_provider.get_from().unwrap_or_default()
+                ),
             ])
             .set(latest_block_number.as_u64() as i64);
 
@@ -242,15 +241,14 @@ where
                                 self.address, receipt
                             );
                             // Add challenge to metrics
-                            LAST_SCANNED_BLOCK_GAUGE
+                            CHALLENGE_COUNTER
                                 .with_label_values(&[
-                                    &self.address.to_string(),
-                                    &self
-                                        .contract_provider
-                                        .get_from()
-                                        .unwrap_or_default()
-                                        .to_string(),
-                                    &receipt.transaction_hash.to_string(),
+                                    &format!("{:?}", self.address),
+                                    &format!(
+                                        "{:?}",
+                                        self.contract_provider.get_from().unwrap_or_default()
+                                    ),
+                                    &format!("{:?}", receipt.transaction_hash),
                                 ])
                                 .inc();
                         } else {
@@ -319,12 +317,11 @@ where
 
                     ERRORS_COUNTER
                         .with_label_values(&[
-                            &self.address.to_string(),
-                            &self
-                                .contract_provider
-                                .get_from()
-                                .unwrap_or_default()
-                                .to_string(),
+                            &format!("{:?}", self.address),
+                            &format!(
+                                "{:?}",
+                                self.contract_provider.get_from().unwrap_or_default()
+                            ),
                             &err.to_string(),
                         ])
                         .inc();
