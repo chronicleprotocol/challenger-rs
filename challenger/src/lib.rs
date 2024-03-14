@@ -44,6 +44,7 @@ const DEFAULT_CHECK_INTERVAL_IN_MS: u64 = 30_000;
 // Max number of failures before we stop processing address.
 const MAX_FAILURE_COUNT: u8 = 3;
 
+#[derive(Debug)]
 pub struct Challenger<P: ScribeOptimisticProvider + 'static> {
     address: Address,
     contract_provider: P,
@@ -85,7 +86,7 @@ where
         let challenge_period_in_sec = self.contract_provider.get_challenge_period().await?;
 
         debug!(
-            "Address: {:?}. reloaded opChallenge period for contract is {:?}",
+            "[{:?}] Reloaded opChallenge period for contract is {:?}",
             self.address, challenge_period_in_sec
         );
         self.challenge_period_in_sec = challenge_period_in_sec;
@@ -158,7 +159,7 @@ where
         );
 
         debug!(
-            "[{:?}] block we starting with {:?}",
+            "[{:?}] Block we starting with {:?}",
             self.address, from_block
         );
 
@@ -194,20 +195,20 @@ where
         // Check if we have unchallenged pokes
         if unchallenged_pokes.is_empty() {
             debug!(
-                "[{:?}] no unchallenged opPokes found, skipping...",
+                "[{:?}] No unchallenged opPokes found, skipping...",
                 self.address
             );
             return Ok(());
         }
 
-        for (log, meta) in unchallenged_pokes {
+        for (poke, meta) in unchallenged_pokes {
             let challengeable = self
                 .is_challengeable(meta.block_number, self.challenge_period_in_sec)
                 .await?;
 
             if !challengeable {
                 error!(
-                    "[{:?}] block is to old for `opChallenge` block number: {:?}",
+                    "[{:?}] Block is to old for `opChallenge` block number: {:?}",
                     self.address, meta.block_number
                 );
                 continue;
@@ -215,26 +216,26 @@ where
 
             let valid = self
                 .contract_provider
-                .is_schnorr_signature_valid(log.clone())
+                .is_schnorr_signature_valid(poke.clone())
                 .await?;
 
             debug!(
-                "[{:?}] schnorr data valid for block {:?}: {:?}",
+                "[{:?}] Schnorr data valid for block {:?}: {:?}",
                 self.address, meta.block_number, valid
             );
 
             if !valid {
                 debug!(
-                    "[{:?}] schnorr data is not valid, trying to challenge...",
+                    "[{:?}] Schnorr data is not valid, trying to challenge...",
                     self.address
                 );
 
                 // TODO: handle error gracefully, we should go further even if error happened
-                match self.contract_provider.challenge(log.schnorr_data).await {
+                match self.contract_provider.challenge(poke.schnorr_data).await {
                     Ok(receipt) => {
                         if let Some(receipt) = receipt {
                             info!(
-                                "[{:?}] successfully sent `opChallenge` transaction {:?}",
+                                "[{:?}] Successfully sent `opChallenge` transaction {:?}",
                                 self.address, receipt
                             );
                             // Add challenge to metrics
@@ -250,14 +251,14 @@ where
                                 .inc();
                         } else {
                             warn!(
-                                "[{:?}] successfully sent `opChallenge` transaction but no receipt returned",
+                                "[{:?}] Successfully sent `opChallenge` transaction but no receipt returned",
                                 self.address
                             );
                         }
                     }
                     Err(err) => {
                         error!(
-                            "[{:?}] failed to make `opChallenge` call: {:?}",
+                            "[{:?}] Failed to make `opChallenge` call: {:?}",
                             self.address, err
                         );
                     }
@@ -299,7 +300,7 @@ where
         let mut interval = time::interval(self.tick_interval);
 
         loop {
-            debug!("[{:?}] processing tick", self.address);
+            debug!("[{:?}] Processing tick", self.address);
             match self.process().await {
                 Ok(_) => {
                     debug!("[{:?}] All ok, continue with next tick...", self.address);
@@ -307,7 +308,7 @@ where
                     self.failure_count = 0;
                 }
                 Err(err) => {
-                    error!("[{:?}] failed to process opPokes: {:?}", self.address, err);
+                    error!("[{:?}] Failed to process opPokes: {:?}", self.address, err);
 
                     ERRORS_COUNTER
                         .with_label_values(&[
@@ -324,7 +325,7 @@ where
                     self.failure_count += 1;
                     if self.failure_count >= self.max_failure_count {
                         error!(
-                            "[{:?}] reached max failure count, stopping processing...",
+                            "[{:?}] Reached max failure count, stopping processing...",
                             self.address
                         );
                         return Err(err);

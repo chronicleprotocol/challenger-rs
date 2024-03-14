@@ -137,7 +137,7 @@ async fn main() -> Result<()> {
 
         let client_clone = client.clone();
         set.spawn(async move {
-            info!("Address {:?} starting monitoring opPokes", address);
+            info!("[{:?}] starting monitoring opPokes", address);
 
             let contract_provider = HttpScribeOptimisticProvider::new(address, client_clone);
             let mut challenger = Challenger::new(address, contract_provider, None, None);
@@ -200,7 +200,7 @@ async fn metrics_handle() -> Result<impl Reply, Rejection> {
     match metrics::as_encoded_string() {
         Ok(v) => Ok(v),
         Err(e) => {
-            error!("could not encode custom metrics: {}", e);
+            error!("Could not encode custom metrics: {}", e);
             Ok(String::default())
         }
     }
