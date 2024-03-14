@@ -82,13 +82,10 @@ where
     // Reloads challenge period from contract.
     // This function have to be called every N time, because challenge period can be changed by contract owner.
     async fn reload_challenge_period(&mut self) -> Result<()> {
-        let challenge_period_in_sec = self
-            .contract_provider
-            .get_challenge_period(self.address)
-            .await?;
+        let challenge_period_in_sec = self.contract_provider.get_challenge_period().await?;
 
         debug!(
-            "Address {:?}, reloaded opChallenge period for contract is {:?}",
+            "Address: {:?}. reloaded opChallenge period for contract is {:?}",
             self.address, challenge_period_in_sec
         );
         self.challenge_period_in_sec = challenge_period_in_sec;
@@ -161,7 +158,7 @@ where
         );
 
         debug!(
-            "Address {:?}, block we starting with {:?}",
+            "[{:?}] block we starting with {:?}",
             self.address, from_block
         );
 
@@ -182,13 +179,13 @@ where
         // Fetch list of `OpPokeChallengedSuccessfully` events
         let challenges = self
             .contract_provider
-            .get_successful_challenges(self.address, from_block, latest_block_number)
+            .get_successful_challenges(from_block, latest_block_number)
             .await?;
 
         // Fetches `OpPoked` events
         let op_pokes = self
             .contract_provider
-            .get_op_pokes(self.address, from_block, latest_block_number)
+            .get_op_pokes(from_block, latest_block_number)
             .await?;
 
         // ignoring already challenged pokes
@@ -197,7 +194,7 @@ where
         // Check if we have unchallenged pokes
         if unchallenged_pokes.is_empty() {
             debug!(
-                "Address {:?}, no unchallenged opPokes found, skipping...",
+                "[{:?}] no unchallenged opPokes found, skipping...",
                 self.address
             );
             return Ok(());
@@ -210,7 +207,7 @@ where
 
             if !challengeable {
                 error!(
-                    "Address {:?}, block is to old for `opChallenge` block number: {:?}",
+                    "[{:?}] block is to old for `opChallenge` block number: {:?}",
                     self.address, meta.block_number
                 );
                 continue;
@@ -222,13 +219,13 @@ where
                 .await?;
 
             debug!(
-                "Address {:?}, schnorr data valid for block {:?}: {:?}",
+                "[{:?}] schnorr data valid for block {:?}: {:?}",
                 self.address, meta.block_number, valid
             );
 
             if !valid {
                 debug!(
-                    "Address {:?}, schnorr data is not valid, trying to challenge...",
+                    "[{:?}] schnorr data is not valid, trying to challenge...",
                     self.address
                 );
 
@@ -237,7 +234,7 @@ where
                     Ok(receipt) => {
                         if let Some(receipt) = receipt {
                             info!(
-                                "Address {:?}, successfully sent `opChallenge` transaction {:?}",
+                                "[{:?}] successfully sent `opChallenge` transaction {:?}",
                                 self.address, receipt
                             );
                             // Add challenge to metrics
@@ -253,14 +250,14 @@ where
                                 .inc();
                         } else {
                             warn!(
-                                "Address {:?}, successfully sent `opChallenge` transaction but no receipt returned",
+                                "[{:?}] successfully sent `opChallenge` transaction but no receipt returned",
                                 self.address
                             );
                         }
                     }
                     Err(err) => {
                         error!(
-                            "Address {:?}, failed to make `opChallenge` call: {:?}",
+                            "[{:?}] failed to make `opChallenge` call: {:?}",
                             self.address, err
                         );
                     }
@@ -302,18 +299,15 @@ where
         let mut interval = time::interval(self.tick_interval);
 
         loop {
-            debug!("Address {:?}, processing tick", self.address);
+            debug!("[{:?}] processing tick", self.address);
             match self.process().await {
                 Ok(_) => {
-                    debug!("All ok, continue with next tick...");
+                    debug!("[{:?}] All ok, continue with next tick...", self.address);
                     // Reset error counter
                     self.failure_count = 0;
                 }
                 Err(err) => {
-                    error!(
-                        "Address {:?}, failed to process opPokes: {:?}",
-                        self.address, err
-                    );
+                    error!("[{:?}] failed to process opPokes: {:?}", self.address, err);
 
                     ERRORS_COUNTER
                         .with_label_values(&[
@@ -330,7 +324,7 @@ where
                     self.failure_count += 1;
                     if self.failure_count >= self.max_failure_count {
                         error!(
-                            "Address {:?}, reached max failure count, stopping processing...",
+                            "[{:?}] reached max failure count, stopping processing...",
                             self.address
                         );
                         return Err(err);
@@ -415,18 +409,16 @@ mod tests {
 
             async fn get_block(&self, block_number: U64) -> Result<Option<Block<H256>>>;
 
-            async fn get_challenge_period(&self, address: Address) -> Result<u16>;
+            async fn get_challenge_period(&self) -> Result<u16>;
 
             async fn get_successful_challenges(
                 &self,
-                address: Address,
                 from_block: U64,
                 to_block: U64,
             ) -> Result<Vec<(OpPokeChallengedSuccessfullyFilter, LogMeta)>>;
 
             async fn get_op_pokes(
                 &self,
-                address: Address,
                 from_block: U64,
                 to_block: U64,
             ) -> Result<Vec<(OpPokedFilter, LogMeta)>>;
@@ -618,15 +610,15 @@ mod tests {
 
         mock.expect_get_block().returning(|_| Ok(None));
 
-        mock.expect_get_challenge_period().returning(|_| Ok(600));
+        mock.expect_get_challenge_period().returning(|| Ok(600));
 
         // Let's fail on this function.
         mock.expect_get_successful_challenges()
             .times(usize::from(max_failures))
-            .returning(|_, _, _| eyre::bail!("Error challenges"));
+            .returning(|_, _| eyre::bail!("Error challenges"));
 
         mock.expect_get_op_pokes()
-            .returning(|_, _, _| eyre::bail!("Error op_pokes"));
+            .returning(|_, _| eyre::bail!("Error op_pokes"));
 
         // Setting up challenger
         let mut challenger = Challenger::new(address, mock, Some(10), Some(max_failures));
@@ -651,13 +643,13 @@ mod tests {
         mock.expect_get_block().returning(|_| Ok(None));
 
         mock.expect_get_challenge_period()
-            .returning(|_| eyre::bail!("Error get challenge period"));
+            .returning(|| eyre::bail!("Error get challenge period"));
 
         // Let's fail on this function.
         mock.expect_get_successful_challenges()
-            .returning(|_, _, _| Ok(vec![]));
+            .returning(|_, _| Ok(vec![]));
 
-        mock.expect_get_op_pokes().returning(|_, _, _| Ok(vec![]));
+        mock.expect_get_op_pokes().returning(|_, _| Ok(vec![]));
 
         // Setting up challenger
         let mut challenger = Challenger::new(address, mock, Some(10), None);
@@ -678,11 +670,11 @@ mod tests {
         mock.expect_get_latest_block_number()
             .returning(|| Ok(U64::from(1000)));
 
-        mock.expect_get_challenge_period().returning(|_| Ok(600));
+        mock.expect_get_challenge_period().returning(|| Ok(600));
         // Let's fail on this function.
         mock.expect_get_successful_challenges()
-            .returning(|_, _, _| Ok(vec![]));
-        mock.expect_get_op_pokes().returning(|_, _, _| Ok(vec![]));
+            .returning(|_, _| Ok(vec![]));
+        mock.expect_get_op_pokes().returning(|_, _| Ok(vec![]));
         mock.expect_challenge().never();
 
         mock.expect_get_block().never();
@@ -707,12 +699,12 @@ mod tests {
         mock.expect_get_latest_block_number()
             .returning(|| Ok(U64::from(1000)));
 
-        mock.expect_get_challenge_period().returning(|_| Ok(600));
+        mock.expect_get_challenge_period().returning(|| Ok(600));
         // Let's fail on this function.
         mock.expect_get_successful_challenges()
-            .returning(|_, _, _| Ok(vec![]));
+            .returning(|_, _| Ok(vec![]));
 
-        mock.expect_get_op_pokes().returning(|_, _, _| {
+        mock.expect_get_op_pokes().returning(|_, _| {
             Ok(vec![(
                 OpPokedFilter {
                     ..Default::default()
@@ -753,12 +745,12 @@ mod tests {
         mock.expect_get_latest_block_number()
             .returning(|| Ok(U64::from(1000)));
 
-        mock.expect_get_challenge_period().returning(|_| Ok(600));
+        mock.expect_get_challenge_period().returning(|| Ok(600));
         // Let's fail on this function.
         mock.expect_get_successful_challenges()
-            .returning(|_, _, _| Ok(vec![]));
+            .returning(|_, _| Ok(vec![]));
 
-        mock.expect_get_op_pokes().returning(|_, _, _| {
+        mock.expect_get_op_pokes().returning(|_, _| {
             Ok(vec![(
                 OpPokedFilter {
                     ..Default::default()
@@ -799,12 +791,12 @@ mod tests {
         mock.expect_get_latest_block_number()
             .returning(|| Ok(U64::from(1000)));
 
-        mock.expect_get_challenge_period().returning(|_| Ok(600));
+        mock.expect_get_challenge_period().returning(|| Ok(600));
         // Let's fail on this function.
         mock.expect_get_successful_challenges()
-            .returning(|_, _, _| Ok(vec![]));
+            .returning(|_, _| Ok(vec![]));
 
-        mock.expect_get_op_pokes().returning(|_, _, _| {
+        mock.expect_get_op_pokes().returning(|_, _| {
             Ok(vec![(
                 OpPokedFilter {
                     ..Default::default()
@@ -813,9 +805,7 @@ mod tests {
             )])
         });
         // Never called, due to expired timestamp for poke
-        mock.expect_is_schnorr_signature_valid()
-            .never()
-            .returning(|_| Ok(true));
+        mock.expect_is_schnorr_signature_valid().never();
         // Never called
         mock.expect_challenge().never();
 

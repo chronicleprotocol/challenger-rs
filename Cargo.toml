@@ -16,7 +16,7 @@ hex-literal = "0.4.1"
 env_logger = "0.11.3"
 futures = "0.3.28"
 eyre = "0.6.8"
-log = "0.4.20"
+log = { version = "0.4.20", features = ["kv"] }
 hex = "0.4.3"
 chrono = "0.4.26"
 lazy_static = "1.4.0"
@@ -28,7 +28,7 @@ warp = "0.3"
 challenger-lib.workspace = true
 tokio = { workspace = true, features = ["full"] }
 env_logger = { workspace = true }
-log = { workspace = true }
+log = { workspace = true, features = ["kv"] }
 eyre = { workspace = true }
 ethers = { workspace = true }
 warp = { workspace = true }

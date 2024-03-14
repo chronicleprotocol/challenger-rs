@@ -36,13 +36,12 @@ pub trait ScribeOptimisticProvider: Send + Sync {
     async fn get_block(&self, block_number: U64) -> Result<Option<Block<H256>>>;
 
     /// Returns challenge period from ScribeOptimistic smart contract deployed to `address`.
-    async fn get_challenge_period(&self, address: Address) -> Result<u16>;
+    async fn get_challenge_period(&self) -> Result<u16>;
 
     /// Returns list of `OpPokeChallengedSuccessfully` events and log metadata in between `from_block` and `to_block`
     /// from smart contract deployed to `address`.
     async fn get_successful_challenges(
         &self,
-        address: Address,
         from_block: U64,
         to_block: U64,
     ) -> Result<Vec<(OpPokeChallengedSuccessfullyFilter, LogMeta)>>;
@@ -51,7 +50,6 @@ pub trait ScribeOptimisticProvider: Send + Sync {
     /// deployed to `address`.
     async fn get_op_pokes(
         &self,
-        address: Address,
         from_block: U64,
         to_block: U64,
     ) -> Result<Vec<(OpPokedFilter, LogMeta)>>;
@@ -117,8 +115,8 @@ where
     }
 
     /// Returns challenge period from ScribeOptimistic smart contract deployed to `address`.
-    async fn get_challenge_period(&self, address: Address) -> Result<u16> {
-        debug!("Address {:?}: Getting challenge period", address);
+    async fn get_challenge_period(&self) -> Result<u16> {
+        debug!("[{:?}] Getting challenge period", self.address);
 
         self.contract
             .op_challenge_period()
@@ -131,23 +129,22 @@ where
     /// from smart contract deployed to `address`.
     async fn get_successful_challenges(
         &self,
-        address: Address,
         from_block: U64,
         to_block: U64,
     ) -> Result<Vec<(OpPokeChallengedSuccessfullyFilter, LogMeta)>> {
         debug!(
-            "Address {:?}, searching OpPokeChallengedSuccessfully events from block {:?} to block {:?}",
-            address, from_block, to_block
+            "[{:?}] Searching OpPokeChallengedSuccessfully events from block {:?} to block {:?}",
+            self.address, from_block, to_block
         );
         let event =
             Contract::event_of_type::<OpPokeChallengedSuccessfullyFilter>(self.client.clone())
-                .address(ValueOrArray::Array(vec![address]))
+                .address(ValueOrArray::Array(vec![self.address]))
                 .from_block(from_block)
                 .to_block(to_block);
 
         event.query_with_meta().await.wrap_err(format!(
-            "Address {:?}: Failed to get OpPokeChallengedSuccessfully events from block {:?} to block {:?}",
-            address, from_block, to_block
+            "Failed to get OpPokeChallengedSuccessfully events from block {:?} to block {:?}",
+            from_block, to_block
         ))
     }
 
@@ -155,22 +152,21 @@ where
     /// deployed to `address`.
     async fn get_op_pokes(
         &self,
-        address: Address,
         from_block: U64,
         to_block: U64,
     ) -> Result<Vec<(OpPokedFilter, LogMeta)>> {
         debug!(
-            "Address {:?}, searching OpPoked events from block {:?} to block {:?}",
-            address, from_block, to_block
+            "[{:?}] Searching OpPoked events from block {:?} to block {:?}",
+            self.address, from_block, to_block
         );
         let event = Contract::event_of_type::<OpPokedFilter>(self.client.clone())
-            .address(ValueOrArray::Array(vec![address]))
+            .address(ValueOrArray::Array(vec![self.address]))
             .from_block(from_block)
             .to_block(to_block);
 
         event.query_with_meta().await.wrap_err(format!(
-            "Address {:?}: Failed to get OpPoked events from block {:?} to block {:?}",
-            address, from_block, to_block
+            "Failed to get OpPoked events from block {:?} to block {:?}",
+            from_block, to_block
         ))
     }
 
@@ -179,7 +175,7 @@ where
     /// Validation logic described in here: https://github.com/chronicleprotocol/scribe/blob/main/docs/Scribe.md#verifying-optimistic-pokes
     async fn is_schnorr_signature_valid(&self, op_poked: OpPokedFilter) -> Result<bool> {
         debug!(
-            "Address {:?}: Validating schnorr signature for {:?}",
+            "[{:?}] Validating schnorr signature for {:?}",
             self.address, op_poked
         );
 
@@ -202,7 +198,7 @@ where
     /// NOTE: You have to validate if schnorr signature is INVALID before calling this function !
     async fn challenge(&self, schnorr_data: SchnorrData) -> Result<Option<TransactionReceipt>> {
         debug!(
-            "Address {:?}: Challenging schnorr data {:?}",
+            "[{:?}] Challenging schnorr data {:?}",
             self.address, schnorr_data
         );
 
