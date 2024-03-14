@@ -118,6 +118,11 @@ where
         last_block_number: U64,
         challenge_period_in_sec: u16,
     ) -> Result<U64> {
+        debug!(
+            "[{:?}] Calculating starting block number, latest from chain {:?}, period {:?}",
+            self.address, last_block_number, challenge_period_in_sec
+        );
+
         let blocks_per_period = challenge_period_in_sec / SLOT_PERIOD_SECONDS;
 
         Ok(last_block_number - blocks_per_period)
@@ -159,8 +164,8 @@ where
         );
 
         debug!(
-            "[{:?}] Block we starting with {:?}",
-            self.address, from_block
+            "[{:?}] Block we starting with {:?}, latest chain block {:?}",
+            self.address, from_block, latest_block_number
         );
 
         // Updating last processed block with latest chain block
