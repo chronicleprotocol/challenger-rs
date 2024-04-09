@@ -1,3 +1,4 @@
+use ethers::types::{Address, H256};
 use eyre::{Context, Result};
 use lazy_static::lazy_static;
 use prometheus::{IntCounterVec, IntGaugeVec, Opts, Registry};
@@ -21,6 +22,31 @@ lazy_static! {
         &["address", "from"]
     )
     .expect("metric can be created");
+}
+
+/// `set_last_scanned_block` sets the last scanned block for given `address` and `from` account.
+pub fn set_last_scanned_block(address: Address, from: Address, block: i64) {
+    LAST_SCANNED_BLOCK_GAUGE
+        .with_label_values(&[&format!("{:?}", address), &format!("{:?}", from)])
+        .set(block);
+}
+
+/// `inc_challenges_counter` increments the errors counter for given `address`, `from` account
+pub fn inc_errors_counter(address: Address, from: Address, error: &str) {
+    ERRORS_COUNTER
+        .with_label_values(&[&format!("{:?}", address), &format!("{:?}", from), error])
+        .inc();
+}
+
+/// `inc_challenge_counter` increments the challenges counter for given `address`, `from` account and tx hash.
+pub fn inc_challenge_counter(address: Address, from: Address, tx: H256) {
+    CHALLENGE_COUNTER
+        .with_label_values(&[
+            &format!("{:?}", address),
+            &format!("{:?}", from),
+            &format!("{:?}", tx),
+        ])
+        .inc();
 }
 
 /// `register_custom_metrics` registers custom metrics to the registry.

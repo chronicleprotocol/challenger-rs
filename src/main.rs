@@ -28,8 +28,7 @@ use std::{env, panic};
 
 mod wallet;
 
-use challenger_lib::{contract::HttpScribeOptimisticProvider, metrics::ERRORS_COUNTER};
-use challenger_lib::{metrics, Challenger};
+use challenger_lib::{contract::HttpScribeOptimisticProvider, metrics, Challenger};
 
 use tokio::signal;
 use tokio::task::JoinSet;
@@ -137,7 +136,7 @@ async fn main() -> Result<()> {
 
         let client_clone = client.clone();
         set.spawn(async move {
-            info!("Address {:?} starting monitoring opPokes", address);
+            info!("[{:?}] starting monitoring opPokes", address);
 
             let contract_provider = HttpScribeOptimisticProvider::new(address, client_clone);
             let mut challenger = Challenger::new(address, contract_provider, None, None);
@@ -145,13 +144,12 @@ async fn main() -> Result<()> {
             let res = challenger.start().await;
             // Check and add error into metrics
             if res.is_err() {
-                ERRORS_COUNTER
-                    .with_label_values(&[
-                        &format!("{:?}", address),
-                        &format!("{:?}", signer_address),
-                        &res.err().unwrap().to_string(),
-                    ])
-                    .inc();
+                // Increment error counter
+                metrics::inc_errors_counter(
+                    address,
+                    signer_address,
+                    &res.err().unwrap().to_string(),
+                );
             }
         });
     }
@@ -200,7 +198,7 @@ async fn metrics_handle() -> Result<impl Reply, Rejection> {
     match metrics::as_encoded_string() {
         Ok(v) => Ok(v),
         Err(e) => {
-            error!("could not encode custom metrics: {}", e);
+            error!("Could not encode custom metrics: {}", e);
             Ok(String::default())
         }
     }
