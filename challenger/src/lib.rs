@@ -18,7 +18,7 @@ use ethers::{
     contract::LogMeta,
     core::types::{Address, U64},
 };
-use eyre::Result;
+use eyre::{bail, Result};
 use log::{debug, error, info, warn};
 use std::time::Duration;
 use tokio::time;
@@ -27,8 +27,6 @@ pub mod contract;
 pub mod metrics;
 
 use contract::{OpPokeChallengedSuccessfullyFilter, OpPokedFilter, ScribeOptimisticProvider};
-
-use crate::metrics::{CHALLENGE_COUNTER, ERRORS_COUNTER, LAST_SCANNED_BLOCK_GAUGE};
 
 // Note: this is true virtually all of the time but because of leap seconds not always.
 // We take minimal time just to be sure, it's always better to check outdated blocks
@@ -78,6 +76,18 @@ where
                 tick_interval.unwrap_or(DEFAULT_CHECK_INTERVAL_IN_MS),
             ),
         }
+    }
+
+    // Sets last processed block number in challenger
+    fn set_last_processed_block(&mut self, block: U64) {
+        self.last_processed_block = Some(block);
+
+        // Updating last scanned block metric
+        metrics::set_last_scanned_block(
+            self.address,
+            self.contract_provider.get_from().unwrap_or_default(),
+            block.as_u64() as i64,
+        );
     }
 
     // Reloads challenge period from contract.
@@ -146,6 +156,9 @@ where
         Ok(challenge_period_in_sec > diff as u16)
     }
 
+    // This function is called every tick.
+    // Deciedes blocks range we have to process, processing them and if no error happened sets new `last_processed_block` for next tick.
+    // If error happened on next tick it will again try to process same blocks.
     async fn process(&mut self) -> Result<()> {
         // Reloads challenge period value
         self.reload_challenge_period_if_needed().await.unwrap();
@@ -163,35 +176,46 @@ where
                 .await?,
         );
 
-        debug!(
-            "[{:?}] Block we starting with {:?}, latest chain block {:?}",
-            self.address, from_block, latest_block_number
-        );
+        // In some cases (block drop) our latest processed block can be bigger than latest block from chain,
+        // in this case we have to skip processing and reset last processed block, so on next tick we will retry.
+        // Also we returning error to increase failure count.
+        if from_block > latest_block_number {
+            // Resetting last processed block with latest chain block
+            self.set_last_processed_block(latest_block_number);
+
+            bail!(
+                "Invalid block range {:?} - {:?}, from block is bigger than to block, resetting last processed block to latest block from chain.",
+                from_block, latest_block_number
+            );
+        }
+
+        // Processing blocks range
+        self.process_blocks_range(from_block, latest_block_number)
+            .await?;
 
         // Updating last processed block with latest chain block
-        self.last_processed_block = Some(latest_block_number);
+        self.set_last_processed_block(latest_block_number);
 
-        // Updating last scanned block metric
-        LAST_SCANNED_BLOCK_GAUGE
-            .with_label_values(&[
-                &format!("{:?}", self.address),
-                &format!(
-                    "{:?}",
-                    self.contract_provider.get_from().unwrap_or_default()
-                ),
-            ])
-            .set(latest_block_number.as_u64() as i64);
+        Ok(())
+    }
+
+    // Validates all `OpPoked` events and challenges them if needed.
+    async fn process_blocks_range(&mut self, from_block: U64, to_block: U64) -> Result<()> {
+        debug!(
+            "[{:?}] Processing blocks range {:?} - {:?}",
+            self.address, from_block, to_block
+        );
 
         // Fetch list of `OpPokeChallengedSuccessfully` events
         let challenges = self
             .contract_provider
-            .get_successful_challenges(from_block, latest_block_number)
+            .get_successful_challenges(from_block, to_block)
             .await?;
 
         // Fetches `OpPoked` events
         let op_pokes = self
             .contract_provider
-            .get_op_pokes(from_block, latest_block_number)
+            .get_op_pokes(from_block, to_block)
             .await?;
 
         // ignoring already challenged pokes
@@ -200,8 +224,8 @@ where
         // Check if we have unchallenged pokes
         if unchallenged_pokes.is_empty() {
             debug!(
-                "[{:?}] No unchallenged opPokes found, skipping...",
-                self.address
+                "[{:?}] No unchallenged opPokes found in block range {:?} - {:?}, skipping...",
+                self.address, from_block, to_block
             );
             return Ok(());
         }
@@ -224,52 +248,51 @@ where
                 .is_schnorr_signature_valid(poke.clone())
                 .await?;
 
-            debug!(
-                "[{:?}] Schnorr data valid for block {:?}: {:?}",
-                self.address, meta.block_number, valid
-            );
-
-            if !valid {
+            // If schnorr data is valid, we should not challenge it...
+            if valid {
                 debug!(
-                    "[{:?}] Schnorr data is not valid, trying to challenge...",
-                    self.address
+                    "[{:?}] Schnorr data for block {:?} is valid, nothing to do...",
+                    self.address, meta.block_number
                 );
 
-                // TODO: handle error gracefully, we should go further even if error happened
-                match self.contract_provider.challenge(poke.schnorr_data).await {
-                    Ok(receipt) => {
-                        if let Some(receipt) = receipt {
-                            info!(
-                                "[{:?}] Successfully sent `opChallenge` transaction {:?}",
-                                self.address, receipt
-                            );
-                            // Add challenge to metrics
-                            CHALLENGE_COUNTER
-                                .with_label_values(&[
-                                    &format!("{:?}", self.address),
-                                    &format!(
-                                        "{:?}",
-                                        self.contract_provider.get_from().unwrap_or_default()
-                                    ),
-                                    &format!("{:?}", receipt.transaction_hash),
-                                ])
-                                .inc();
-                        } else {
-                            warn!(
-                                "[{:?}] Successfully sent `opChallenge` transaction but no receipt returned",
-                                self.address
-                            );
-                        }
-                    }
-                    Err(err) => {
-                        error!(
-                            "[{:?}] Failed to make `opChallenge` call: {:?}",
-                            self.address, err
-                        );
-                    }
-                };
+                continue;
             }
+
+            info!(
+                "[{:?}] Schnorr data for block {:?} is not valid, trying to challenge...",
+                self.address, meta.block_number
+            );
+
+            // TODO: handle error gracefully, we should go further even if error happened
+            match self.contract_provider.challenge(poke.schnorr_data).await {
+                Ok(receipt) => {
+                    if let Some(receipt) = receipt {
+                        info!(
+                            "[{:?}] Successfully sent `opChallenge` transaction for OpPoke on block {:?}: {:?}",
+                            self.address, meta.block_number, receipt
+                        );
+                        // Add challenge to metrics
+                        metrics::inc_challenge_counter(
+                            self.address,
+                            self.contract_provider.get_from().unwrap_or_default(),
+                            receipt.transaction_hash,
+                        );
+                    } else {
+                        warn!(
+                                "[{:?}] Successfully sent `opChallenge` for block {:?} transaction but no receipt returned",
+                                self.address, meta.block_number
+                            );
+                    }
+                }
+                Err(err) => {
+                    error!(
+                        "[{:?}] Failed to make `opChallenge` call for block {:?}: {:?}",
+                        self.address, meta.block_number, err
+                    );
+                }
+            };
         }
+
         Ok(())
     }
 
@@ -305,26 +328,20 @@ where
         let mut interval = time::interval(self.tick_interval);
 
         loop {
-            debug!("[{:?}] Processing tick", self.address);
             match self.process().await {
                 Ok(_) => {
-                    debug!("[{:?}] All ok, continue with next tick...", self.address);
                     // Reset error counter
                     self.failure_count = 0;
                 }
                 Err(err) => {
                     error!("[{:?}] Failed to process opPokes: {:?}", self.address, err);
 
-                    ERRORS_COUNTER
-                        .with_label_values(&[
-                            &format!("{:?}", self.address),
-                            &format!(
-                                "{:?}",
-                                self.contract_provider.get_from().unwrap_or_default()
-                            ),
-                            &err.to_string(),
-                        ])
-                        .inc();
+                    // Increment error counter
+                    metrics::inc_errors_counter(
+                        self.address,
+                        self.contract_provider.get_from().unwrap_or_default(),
+                        &err.to_string(),
+                    );
 
                     // Increment and check error counter
                     self.failure_count += 1;
@@ -661,6 +678,36 @@ mod tests {
         let mut challenger = Challenger::new(address, mock, Some(10), None);
 
         challenger.process().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_last_processed_block_bigger_than_last_chain_block() {
+        // Just random address
+        let address = "0x3D4c07Bd3cf5FB80ACB6Ec31531DBB338329b5F5"
+            .parse::<Address>()
+            .unwrap();
+        let max_failures: u8 = 3;
+
+        // Setting up mock
+        let mut mock = MockTestScribe::new();
+        mock.expect_get_latest_block_number()
+            .returning(|| Ok(U64::from(1000)));
+
+        mock.expect_get_challenge_period().returning(|| Ok(600));
+        mock.expect_get_successful_challenges().never();
+        mock.expect_get_op_pokes().never();
+        mock.expect_challenge().never();
+        mock.expect_get_block().never();
+
+        // Setting up challenger
+        let mut challenger = Challenger::new(address, mock, Some(10), Some(max_failures));
+        challenger.set_last_processed_block(U64::from(1001));
+
+        let res = challenger.process().await;
+        // Should be error in result.
+        assert!(res.is_err());
+        // Check we reseted the last processed block
+        assert!(challenger.last_processed_block == Some(U64::from(1000)));
     }
 
     #[tokio::test]

@@ -28,8 +28,7 @@ use std::{env, panic};
 
 mod wallet;
 
-use challenger_lib::{contract::HttpScribeOptimisticProvider, metrics::ERRORS_COUNTER};
-use challenger_lib::{metrics, Challenger};
+use challenger_lib::{contract::HttpScribeOptimisticProvider, metrics, Challenger};
 
 use tokio::signal;
 use tokio::task::JoinSet;
@@ -145,13 +144,12 @@ async fn main() -> Result<()> {
             let res = challenger.start().await;
             // Check and add error into metrics
             if res.is_err() {
-                ERRORS_COUNTER
-                    .with_label_values(&[
-                        &format!("{:?}", address),
-                        &format!("{:?}", signer_address),
-                        &res.err().unwrap().to_string(),
-                    ])
-                    .inc();
+                // Increment error counter
+                metrics::inc_errors_counter(
+                    address,
+                    signer_address,
+                    &res.err().unwrap().to_string(),
+                );
             }
         });
     }
