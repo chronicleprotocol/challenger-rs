@@ -23,18 +23,20 @@ use ethers::{
 };
 use eyre::Result;
 use log::{error, info};
-use std::sync::Arc;
-use std::{env, panic};
+use std::{env, panic, time::Duration};
+use std::{net::SocketAddr, sync::Arc};
 
 mod wallet;
 
 use challenger_lib::{contract::HttpScribeOptimisticProvider, metrics, Challenger};
 
 use tokio::signal;
-use tokio::task::JoinSet;
+use tokio::{task::JoinSet, time};
 
 use wallet::{CustomWallet, KeystoreWallet, PrivateKeyWallet};
-use warp::{reject::Rejection, reply::Reply, Filter};
+
+use metrics_exporter_prometheus::PrometheusBuilder;
+use metrics_process::Collector;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
@@ -131,6 +133,29 @@ async fn main() -> Result<()> {
     let mut addresses = args.addresses;
     addresses.dedup();
 
+    // Register Prometheus metrics
+    let builder = PrometheusBuilder::new();
+
+    let port = env::var("HTTP_PORT")
+        .unwrap_or(String::from("9090"))
+        .parse::<u16>()
+        .unwrap();
+
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+
+    builder
+        .with_http_listener(addr)
+        .install()
+        .expect("failed to install Prometheus recorder");
+
+    // Add challenger metrics description
+    metrics::describe();
+
+    let collector = Collector::new("challenger_");
+    // Add Prometheus metrics help for process metrics
+    collector.describe();
+
+    // Start processing per address
     for address in &addresses {
         let address = address.parse::<Address>()?;
 
@@ -154,22 +179,14 @@ async fn main() -> Result<()> {
         });
     }
 
-    // TODO: Start HTTP server for `:9090/metrics`
+    // Run metrics collector process
     set.spawn(async move {
-        metrics::register_custom_metrics();
+        let mut interval = time::interval(Duration::from_millis(750));
 
-        let metrics_route = warp::path!("metrics").and_then(metrics_handle);
-        let health_route = warp::path!("health").map(|| warp::reply::json(&"OK"));
-
-        let port = env::var("HTTP_PORT")
-            .unwrap_or(String::from("9090"))
-            .parse::<u16>()
-            .unwrap();
-
-        info!("Starting HTTP server on port {}", port);
-        warp::serve(metrics_route.or(health_route))
-            .run(([0, 0, 0, 0], port))
-            .await;
+        loop {
+            collector.collect();
+            interval.tick().await;
+        }
     });
 
     tokio::select! {
@@ -192,16 +209,6 @@ async fn main() -> Result<()> {
     set.shutdown().await;
 
     Ok(())
-}
-
-async fn metrics_handle() -> Result<impl Reply, Rejection> {
-    match metrics::as_encoded_string() {
-        Ok(v) => Ok(v),
-        Err(e) => {
-            error!("Could not encode custom metrics: {}", e);
-            Ok(String::default())
-        }
-    }
 }
 
 #[cfg(test)]
