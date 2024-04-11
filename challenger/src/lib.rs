@@ -418,7 +418,7 @@ mod tests {
     use contract::SchnorrData;
     use ethers::{
         contract::LogMeta,
-        types::{Address, Block, TransactionReceipt, H160, H256, U256, U64},
+        types::{Block, TransactionReceipt, H160, H256, U256, U64},
     };
     use eyre::Result;
     use mockall::{mock, predicate::*};
