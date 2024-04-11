@@ -1,9 +1,9 @@
 use ethers::types::{Address, H256};
 use metrics::{counter, describe_counter, describe_gauge, gauge};
 
-const LAST_SCANNED_BLOCK_GAUGE: &'static str = "challenger_last_scanned_block";
-const ERRORS_COUNTER: &'static str = "challenger_errors_total";
-const CHALLENGE_COUNTER: &'static str = "challenger_challenges_total";
+const LAST_SCANNED_BLOCK_GAUGE: &str = "challenger_last_scanned_block";
+const ERRORS_COUNTER: &str = "challenger_errors_total";
+const CHALLENGE_COUNTER: &str = "challenger_challenges_total";
 
 /// `set_last_scanned_block` sets the last scanned block for given `address` and `from` account.
 pub fn set_last_scanned_block(address: Address, from: Address, block: i64) {
