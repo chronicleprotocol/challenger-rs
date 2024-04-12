@@ -23,7 +23,7 @@ use ethers::{
 };
 use eyre::Result;
 use log::{error, info};
-use std::{env, panic, time::Duration};
+use std::{env, panic, path::PathBuf, time::Duration};
 use std::{net::SocketAddr, sync::Arc};
 
 mod wallet;
@@ -49,28 +49,38 @@ struct Cli {
         help = "ScribeOptimistic contract addresses. Example: `0x891E368fE81cBa2aC6F6cc4b98e684c106e2EF4f`"
     )]
     addresses: Vec<String>,
+
     #[arg(long, help = "Node HTTP RPC_URL, normally starts with https://****")]
     rpc_url: String,
+
     #[arg(
-        long,
+        long = "secret-key",
         help = "Private key in format `0x******` or `*******`. If provided, no need to use --keystore"
     )]
-    secret_key: Option<String>,
+    raw_secret_key: Option<String>,
+
     #[arg(
-        long,
+        long = "keystore",
         env = "ETH_KEYSTORE",
         help = "Keystore file (NOT FOLDER), path to key .json file. If provided, no need to use --secret-key"
     )]
-    keystore: Option<String>,
-    #[arg(long, requires = "keystore", help = "Key raw password as text")]
-    password: Option<String>,
+    keystore_path: Option<PathBuf>,
+
+    #[arg(
+        long = "password",
+        requires = "keystore_path",
+        help = "Key raw password as text"
+    )]
+    raw_password: Option<String>,
+
     #[arg(
         long,
-        requires = "keystore",
+        requires = "keystore_path",
         env = "ETH_PASSWORD",
         help = "Path to key password file"
     )]
-    password_file: Option<String>,
+    password_file: Option<PathBuf>,
+
     #[arg(
         long,
         help = "If no chain_id provided binary will try to get chain_id from given RPC"
@@ -79,21 +89,21 @@ struct Cli {
 }
 
 impl PrivateKeyWallet for Cli {
-    fn private_key(&self) -> Option<String> {
-        self.secret_key.clone()
+    fn raw_private_key(&self) -> Option<String> {
+        self.raw_secret_key.clone()
     }
 }
 
 impl KeystoreWallet for Cli {
-    fn keystore(&self) -> Option<String> {
-        self.keystore.clone()
+    fn keystore_path(&self) -> Option<PathBuf> {
+        self.keystore_path.clone()
     }
 
-    fn password(&self) -> Option<String> {
-        self.password.clone()
+    fn raw_password(&self) -> Option<String> {
+        self.raw_password.clone()
     }
 
-    fn password_file(&self) -> Option<String> {
+    fn password_file(&self) -> Option<PathBuf> {
         self.password_file.clone()
     }
 }
@@ -221,12 +231,12 @@ mod tests {
     fn builds_wallet_from_private_key() {
         let cli = Cli {
             addresses: vec![],
-            secret_key: Some(
+            raw_secret_key: Some(
                 "def90b5b5cb2d68c5cd9de7b3e6d767cbb1b8d5fd8560bd6c42cbc4a4da30b16".to_string(),
             ),
             chain_id: None,
-            keystore: None,
-            password: None,
+            keystore_path: None,
+            raw_password: None,
             password_file: None,
             rpc_url: "http://localhost:8545".to_string(),
         };
@@ -241,12 +251,12 @@ mod tests {
         // Works with `0x` prefix
         let cli = Cli {
             addresses: vec![],
-            secret_key: Some(
+            raw_secret_key: Some(
                 "0xdef90b5b5cb2d68c5cd9de7b3e6d767cbb1b8d5fd8560bd6c42cbc4a4da30b16".to_string(),
             ),
             chain_id: None,
-            keystore: None,
-            password: None,
+            keystore_path: None,
+            raw_password: None,
             password_file: None,
             rpc_url: "http://localhost:8545".to_string(),
         };
@@ -265,17 +275,16 @@ mod tests {
         let keystore_file = keystore
             .join("UTC--2022-12-20T10-30-43.591916000Z--ec554aeafe75601aaab43bd4621a22284db566c2");
 
-        let keystore_password_file = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/keystore/password")
-            .into_os_string();
+        let keystore_password_file =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/keystore/password");
 
         let cli = Cli {
             addresses: vec![],
-            secret_key: None,
+            raw_secret_key: None,
             chain_id: None,
-            keystore: Some(keystore_file.to_str().unwrap().to_string()),
-            password: None,
-            password_file: Some(keystore_password_file.into_string().unwrap()),
+            keystore_path: Some(keystore_file),
+            raw_password: None,
+            password_file: Some(keystore_password_file),
             rpc_url: "http://localhost:8545".to_string(),
         };
 
@@ -295,10 +304,10 @@ mod tests {
 
         let cli = Cli {
             addresses: vec![],
-            secret_key: None,
+            raw_secret_key: None,
             chain_id: None,
-            keystore: Some(keystore_file.to_str().unwrap().to_string()),
-            password: Some("keystorepassword".to_string()),
+            keystore_path: Some(keystore_file),
+            raw_password: Some("keystorepassword".to_string()),
             password_file: None,
             rpc_url: "http://localhost:8545".to_string(),
         };

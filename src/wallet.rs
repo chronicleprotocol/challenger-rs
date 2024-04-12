@@ -22,10 +22,11 @@ use std::{
 };
 
 pub trait PrivateKeyWallet {
-    fn private_key(&self) -> Option<String>;
+    /// Returns the raw private key if it was provided.
+    fn raw_private_key(&self) -> Option<String>;
 
     #[track_caller]
-    fn get_from_private_key(&self, private_key: &str) -> Result<Option<LocalWallet>> {
+    fn from_private_key(&self, private_key: &str) -> Result<Option<LocalWallet>> {
         debug!("Using private key from arguments");
 
         let privk = private_key.trim().strip_prefix("0x").unwrap_or(private_key);
@@ -37,11 +38,14 @@ pub trait PrivateKeyWallet {
 }
 
 pub trait KeystoreWallet {
-    fn keystore(&self) -> Option<String>;
+    /// Returns the path to the keystore file if it was provided.
+    fn keystore_path(&self) -> Option<PathBuf>;
 
-    fn password(&self) -> Option<String>;
+    /// Returns the raw password if it was provided.
+    fn raw_password(&self) -> Option<String>;
 
-    fn password_file(&self) -> Option<String>;
+    /// Returns the path to the password file if it was provided.
+    fn password_file(&self) -> Option<PathBuf>;
 
     /// Ensures the path to the keystore exists.
     ///
@@ -72,9 +76,9 @@ pub trait KeystoreWallet {
 
     fn get_from_keystore(
         &self,
-        keystore_path: Option<&String>,
+        keystore_path: Option<&PathBuf>,
         keystore_password: Option<&String>,
-        keystore_password_file: Option<&String>,
+        keystore_password_file: Option<&PathBuf>,
     ) -> Result<Option<LocalWallet>> {
         Ok(
             match (keystore_path, keystore_password, keystore_password_file) {
@@ -117,11 +121,11 @@ pub trait KeystoreWallet {
 pub trait CustomWallet: PrivateKeyWallet + KeystoreWallet {
     /// Generates wallet for future sign
     fn wallet(&self) -> Result<Option<LocalWallet>> {
-        match (&self.private_key(), &self.keystore()) {
-            (Some(secret), _) => self.get_from_private_key(secret),
+        match (&self.raw_private_key(), &self.keystore_path()) {
+            (Some(secret), _) => self.from_private_key(secret),
             (_, Some(key)) => self.get_from_keystore(
                 Some(key),
-                self.password().as_ref(),
+                self.raw_password().as_ref(),
                 self.password_file().as_ref(),
             ),
             (_, _) => bail!("Please provide private key or keystore"),
