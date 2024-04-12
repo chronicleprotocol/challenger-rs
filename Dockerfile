@@ -11,14 +11,15 @@ RUN apk add lld build-base linux-headers pkgconf openssl-dev
 #     && chmod +x ./rustup.sh \
 #     && ./rustup.sh -y
 
+RUN echo "export RUSTFLAGS='-Ctarget-feature=-crt-static'" >> $HOME/.profile
 RUN [[ "$TARGETARCH" = "arm64" ]] && echo "export CFLAGS=-mno-outline-atomics" >> $HOME/.profile || true
 
 WORKDIR /opt/challenger
 COPY . .
 
 RUN --mount=type=cache,target=/root/.cargo/registry --mount=type=cache,target=/root/.cargo/git --mount=type=cache,target=/opt/challenger/target \
-    # source $HOME/.profile  \
-    && RUSTFLAGS="-Ctarget-feature=-crt-static" cargo build --release \
+    source $HOME/.profile \
+    && cargo build --release \
     && mkdir out \
     && mv target/release/challenger out/challenger \
     && strip out/challenger;
