@@ -17,7 +17,7 @@ WORKDIR /opt/challenger
 COPY . .
 
 RUN --mount=type=cache,target=/root/.cargo/registry --mount=type=cache,target=/root/.cargo/git --mount=type=cache,target=/opt/challenger/target \
-    source $HOME/.profile  \
+    # source $HOME/.profile  \
     && RUSTFLAGS="-Ctarget-feature=-crt-static" cargo build --release \
     && mkdir out \
     && mv target/release/challenger out/challenger \
