@@ -1,0 +1,27 @@
+[package]
+name = "challenger-lib"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+doctest = false
+
+[dependencies]
+ethers = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+hex-literal = { workspace = true }
+env_logger = { workspace = true }
+futures = { workspace = true }
+eyre = { workspace = true }
+log = { workspace = true, features = ["kv"] }
+hex = { workspace = true }
+chrono = { workspace = true }
+lazy_static = { workspace = true }
+tokio-util = { workspace = true }
+async-trait = { workspace = true }
+metrics = { workspace = true }
+
+prometheus = { version = "0.13.3", features = ["process"] }
+
+[dev-dependencies]
+mockall = "0.12.1"

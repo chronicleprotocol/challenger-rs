@@ -1,0 +1,13 @@
+[package]
+name = "scribe"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+alloy = {workspace = true, features = ["full"]}
+eyre = {workspace = true}
+log = {workspace = true}
+tokio = {workspace = true, features = ["full"]}
+tokio-util = {workspace = true}
+tower = {workspace = true, features = ["retry"]}
+metrics = { workspace = true }
