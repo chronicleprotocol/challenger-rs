@@ -13,25 +13,30 @@
 //  You should have received a copy of the GNU Affero General Public License
 //  along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use alloy::primitives::Address;
+use alloy::providers::ProviderBuilder;
+use alloy::rpc::client::ClientBuilder;
+use alloy::transports::layers::RetryBackoffLayer;
 use clap::Parser;
 use env_logger::Env;
-use ethers::{
-    core::types::Address,
-    prelude::SignerMiddleware,
-    providers::{Http, Middleware, Provider},
-    signers::Signer,
-};
+
 use eyre::Result;
 use log::{error, info};
+use scribe::contract::EventWithMetadata;
+use scribe::events_listener::Poller;
+use scribe::metrics;
+use std::net::SocketAddr;
+use std::sync::Arc;
 use std::{env, panic, path::PathBuf, time::Duration};
-use std::{net::SocketAddr, sync::Arc};
+use tokio::time::sleep;
+use tokio_util::sync::CancellationToken;
 
 mod wallet;
 
-use challenger_lib::{contract::HttpScribeOptimisticProvider, metrics, Challenger};
+// use challenger_lib::{contract::HttpScribeOptimisticProvider, metrics, Challenger};
 
-use tokio::signal;
-use tokio::{task::JoinSet, time};
+use tokio::task::JoinSet;
+use tokio::{select, signal};
 
 use wallet::{CustomWallet, KeystoreWallet, PrivateKeyWallet};
 
@@ -113,35 +118,37 @@ impl CustomWallet for Cli {}
 #[tokio::main]
 async fn main() -> Result<()> {
     // Setting default log level to info
-    env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
+    env_logger::Builder::from_env(Env::default().default_filter_or("info,challenger=debug")).init();
 
     let args = Cli::parse();
 
-    let provider = Provider::<Http>::try_from(args.rpc_url.as_str())?;
+    log::info!("Using RPC URL: {:?}", &args.rpc_url);
 
-    info!("Connected to {:?}", provider.url());
-    let chain_id = args
-        .chain_id
-        .unwrap_or(provider.get_chainid().await?.as_u64());
-
-    info!("Chain id: {:?}", chain_id);
-    // Generating signer from given private key
-    let signer = args.wallet()?.unwrap().with_chain_id(chain_id);
+    // Building tx signer for provider
+    let signer = args.wallet()?.unwrap();
 
     info!(
-        "Using {:?} for signing and chain_id {:?}",
-        signer.address(),
-        signer.chain_id()
+        "Using {:?} for signing transactions.",
+        signer.default_signer().address()
     );
 
-    let signer_address = signer.address();
-    let client = Arc::new(SignerMiddleware::new(provider, signer));
+    // Create new HTTP client with retry backoff layer
+    let client = ClientBuilder::default()
+        .layer(RetryBackoffLayer::new(15, 200, 300))
+        .http(args.rpc_url.parse()?);
+
+    let provider = Arc::new(ProviderBuilder::new().wallet(signer).on_client(client));
 
     let mut set = JoinSet::new();
+    let cancel_token = CancellationToken::new();
 
     // Removing duplicates from list of provided addresses
     let mut addresses = args.addresses;
     addresses.dedup();
+    let addresses: Vec<Address> = addresses
+        .iter()
+        .map(|a| a.parse().unwrap())
+        .collect::<Vec<_>>();
 
     // Register Prometheus metrics
     let builder = PrometheusBuilder::new();
@@ -158,56 +165,64 @@ async fn main() -> Result<()> {
         .install()
         .expect("failed to install Prometheus recorder");
 
+    log::info!("Starting Prometheus metrics collector on port: {}", port);
+
     // Add challenger metrics description
     metrics::describe();
 
-    let collector = Collector::new("challenger_");
     // Add Prometheus metrics help for process metrics
+    let collector = Collector::new("challenger_");
     collector.describe();
 
-    // Start processing per address
-    for address in &addresses {
-        let address = address.parse::<Address>()?;
+    let (tx, rx) = tokio::sync::mpsc::channel::<EventWithMetadata>(100);
+    let mut poller = Poller::new(
+        addresses,
+        cancel_token.clone(),
+        provider.clone(),
+        tx.clone(),
+    );
 
-        let client_clone = client.clone();
-        set.spawn(async move {
-            info!("[{:?}] starting monitoring opPokes", address);
-
-            let contract_provider = HttpScribeOptimisticProvider::new(address, client_clone);
-            let mut challenger = Challenger::new(address, contract_provider, None, None);
-
-            let res = challenger.start().await;
-            // Check and add error into metrics
-            if res.is_err() {
-                // Increment error counter
-                metrics::inc_errors_counter(
-                    address,
-                    signer_address,
-                    &res.err().unwrap().to_string(),
-                );
-            }
-        });
-    }
-
-    // Run metrics collector process
+    // Run events listener process
     set.spawn(async move {
-        let mut interval = time::interval(Duration::from_millis(750));
-
-        loop {
-            collector.collect();
-            interval.tick().await;
+        if let Err(err) = poller.start().await {
+            log::error!("Poller error: {:?}", err);
         }
     });
+
+    // Run metrics collector process
+    let metrics_cancelation_token = cancel_token.clone();
+    set.spawn(async move {
+        let duration = Duration::from_millis(750);
+        log::info!("Starting metrics collector");
+
+        loop {
+            select! {
+                _ = metrics_cancelation_token.cancelled() => {
+                    log::info!("Metrics collector stopped");
+                    return;
+                },
+                _ = sleep(duration) => {
+                    collector.collect();
+                }
+            }
+        }
+    });
+
+    // TODO: Start challenger and event verifier process
 
     tokio::select! {
         _ = signal::ctrl_c() => {
             info!("Received Ctrl-C, shutting down");
+            cancel_token.cancel();
         },
 
         // some process terminated, no need to wait for others
         res = set.join_next() => {
             match res.unwrap() {
-                Ok(_) => info!("Task terminated without error, shutting down"),
+                Ok(_) => {
+                    info!("Task terminated without error, shutting down");
+                    cancel_token.cancel();
+                },
                 Err(e) => {
                     error!("Task terminated with error: {:#?}", e.to_string());
                 },
@@ -215,8 +230,8 @@ async fn main() -> Result<()> {
         },
     }
 
-    // Terminating all remaining tasks
-    set.shutdown().await;
+    // Wait for all tasks to finish
+    set.join_all().await;
 
     Ok(())
 }
@@ -224,6 +239,8 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+
+    use alloy::primitives::address;
 
     use super::*;
 
@@ -244,8 +261,8 @@ mod tests {
         let wallet = cli.wallet().unwrap().unwrap();
 
         assert_eq!(
-            wallet.address(),
-            "91543660a715018cb35918add3085d08d7194724".parse().unwrap()
+            wallet.default_signer().address(),
+            address!("91543660a715018cb35918add3085d08d7194724")
         );
 
         // Works with `0x` prefix
@@ -264,8 +281,8 @@ mod tests {
         let wallet = cli.wallet().unwrap().unwrap();
 
         assert_eq!(
-            wallet.address(),
-            "91543660a715018cb35918add3085d08d7194724".parse().unwrap()
+            wallet.default_signer().address(),
+            address!("91543660a715018cb35918add3085d08d7194724")
         );
     }
 
@@ -291,8 +308,8 @@ mod tests {
         let wallet = cli.wallet().unwrap().unwrap();
 
         assert_eq!(
-            wallet.address(),
-            "ec554aeafe75601aaab43bd4621a22284db566c2".parse().unwrap()
+            wallet.default_signer().address(),
+            address!("ec554aeafe75601aaab43bd4621a22284db566c2")
         );
     }
 
@@ -315,8 +332,8 @@ mod tests {
         let wallet = cli.wallet().unwrap().unwrap();
 
         assert_eq!(
-            wallet.address(),
-            "ec554aeafe75601aaab43bd4621a22284db566c2".parse().unwrap()
+            wallet.default_signer().address(),
+            address!("ec554aeafe75601aaab43bd4621a22284db566c2")
         );
     }
 }
