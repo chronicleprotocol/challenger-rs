@@ -16,60 +16,24 @@
 use std::{fmt::Debug, sync::Arc};
 
 use alloy::{
-    primitives::{Address, LogData},
+    primitives::{Address, FixedBytes, LogData},
     rpc::types::Log,
     sol,
     sol_types::SolEvent,
 };
 use eyre::{bail, Result, WrapErr};
+use IScribe::SchnorrData;
+use ScribeOptimistic::{OpPoked, ScribeOptimisticInstance};
 
-use crate::events_listener::RetryProviderWithSigner;
+use crate::events_listener::{RetryProviderWithSigner, RpcRetryProvider};
 
 // Generate the contract bindings for the ScribeOptimistic contract
 sol! {
     #[allow(missing_docs)]
     #[sol(rpc)]
+    #[derive(Debug)]
     ScribeOptimistic,
     "abi/ScribeOptimistic.json"
-}
-
-impl Debug for IScribe::SchnorrData {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SchnorrData")
-            .field("signature", &self.signature)
-            .field("commitment", &self.commitment)
-            .field("signersBlob", &self.signersBlob)
-            .finish()
-    }
-}
-
-impl Debug for IScribe::PokeData {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PokeData")
-            .field("val", &self.val)
-            .field("age", &self.age)
-            .finish()
-    }
-}
-
-impl Debug for ScribeOptimistic::OpPoked {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("OpPoked")
-            .field("caller", &self.caller)
-            .field("opFeed", &self.opFeed)
-            .field("schnorrData", &self.schnorrData)
-            .field("pokeData", &self.pokeData)
-            .finish()
-    }
-}
-
-impl Debug for ScribeOptimistic::OpPokeChallengedSuccessfully {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("OpPokeChallengedSuccessfully")
-            .field("caller", &self.caller)
-            .field("schnorrErr", &self.schnorrErr)
-            .finish()
-    }
 }
 
 // Decode a log into a specific event
@@ -132,7 +96,77 @@ impl EventWithMetadata {
     }
 }
 
-pub struct ScribeOptimisticInstance {
-    address: Address,
-    provider: Arc<RetryProviderWithSigner>,
+#[allow(async_fn_in_trait)]
+pub trait ScribeOptimisticProvider {
+    /// Returns challenge period from ScribeOptimistic smart contract deployed to `address`.
+    async fn get_challenge_period(&self) -> Result<u16>;
+
+    /// Returns true if given `OpPoked` schnorr signature is valid.
+    async fn is_schnorr_signature_valid(&self, op_poked: OpPoked) -> Result<bool>;
+
+    /// Challenges given `OpPoked` event.
+    async fn challenge(&self, schnorr_data: SchnorrData) -> Result<FixedBytes<32>>;
+
+    /// Returns the address of the contract.
+    fn address(&self) -> &Address;
+}
+
+#[derive(Debug)]
+pub struct ScribeOptimisticProviderInstance {
+    // address: Address,
+    // provider: Arc<RetryProviderWithSigner>,
+    contract: ScribeOptimisticInstance<RpcRetryProvider, Arc<RetryProviderWithSigner>>,
+}
+
+impl ScribeOptimisticProviderInstance {
+    /// Creates a new ScribeOptimisticInstance
+    pub fn new(address: Address, provider: Arc<RetryProviderWithSigner>) -> Self {
+        let contract = ScribeOptimistic::new(address, provider.clone());
+        Self {
+            // address,
+            // provider,
+            contract,
+        }
+    }
+}
+
+impl ScribeOptimisticProvider for ScribeOptimisticProviderInstance {
+    async fn get_challenge_period(&self) -> Result<u16> {
+        Ok(self.contract.opChallengePeriod().call().await?._0)
+    }
+
+    async fn is_schnorr_signature_valid(&self, op_poked: OpPoked) -> Result<bool> {
+        log::trace!("{:?} Validating OpPoke signature", self.contract.address());
+
+        let message = self
+            .contract
+            .constructPokeMessage(op_poked.pokeData)
+            .call()
+            .await?
+            ._0;
+
+        let acceptable = self
+            .contract
+            .isAcceptableSchnorrSignatureNow(message, op_poked.schnorrData)
+            .call()
+            .await?
+            ._0;
+
+        Ok(acceptable)
+    }
+
+    async fn challenge(&self, schnorr_data: SchnorrData) -> Result<FixedBytes<32>> {
+        log::debug!("{:?} Challenging OpPoke", self.contract.address());
+        self.contract
+            .opChallenge(schnorr_data)
+            .send()
+            .await?
+            .watch()
+            .await
+            .wrap_err("Failed to challenge")
+    }
+
+    fn address(&self) -> &Address {
+        self.contract.address()
+    }
 }

@@ -45,10 +45,13 @@ const POLL_INTERVAL_SEC: u64 = 30;
 const MAX_ADDRESS_PER_REQUEST: usize = 50;
 
 /// The provider type used to interact with the Ethereum network.
+pub type RpcRetryProvider = RetryBackoffService<Http<Client>>;
+
+/// The provider type used to interact with the Ethereum network with a signer.
 pub type RetryProviderWithSigner = FillProvider<
     JoinFill<Identity, WalletFiller<EthereumWallet>>,
-    RootProvider<RetryBackoffService<Http<Client>>>,
-    RetryBackoffService<Http<Client>>,
+    RootProvider<RpcRetryProvider>,
+    RpcRetryProvider,
     Ethereum,
 >;
 

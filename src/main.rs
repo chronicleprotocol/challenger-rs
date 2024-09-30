@@ -184,6 +184,7 @@ async fn main() -> Result<()> {
 
     // Run events listener process
     set.spawn(async move {
+        log::info!("Starting events listener");
         if let Err(err) = poller.start().await {
             log::error!("Poller error: {:?}", err);
         }
