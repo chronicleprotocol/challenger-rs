@@ -47,6 +47,18 @@ impl<C: ScribeOptimisticProvider> ContractHandler<C> {
                 event = self.rx.recv() => {
                     log::debug!("[{:?}] Received event: {:?}", self.contract.address(), event);
                     // TODO: Handle the event
+                    // if opPoked
+                    // start new process (process need to wait 200ms before start OpPoked validation) (need to wait beacuse next event can be ChallengeSuccessful and we wouldn't need to do anything)
+                    // if next received event is ChallengeSuccessful ->  terminate just started OpPoked process
+                    // if no ChallengeSuccessful received in 200ms -> validate OpPoked
+                    // if OpPoked is valid -> do nothing, all ok
+                    // if OpPoked is invalid -> need to challenge it
+                    //
+                    // Challenge process have to be:
+                    // 1. Send private challenge transaction
+                    // 2. Wait for ChallengeSuccessful event for next 3-4 blocks
+                    // 3. If ChallengeSuccessful received -> all ok, do nothing
+                    // 4. If no ChallengeSuccessful received -> send public challenge transaction
                 }
             }
         }
