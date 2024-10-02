@@ -19,7 +19,10 @@ use alloy::{
     network::{Ethereum, EthereumWallet},
     primitives::Address,
     providers::{
-        fillers::{FillProvider, JoinFill, WalletFiller},
+        fillers::{
+            BlobGasFiller, CachedNonceManager, ChainIdFiller, FillProvider, GasFiller, JoinFill,
+            NonceFiller, WalletFiller,
+        },
         Identity, Provider, RootProvider, WalletProvider,
     },
     rpc::types::{Filter, Log},
@@ -49,9 +52,18 @@ pub type RpcRetryProvider = RetryBackoffService<Http<Client>>;
 
 /// The provider type used to interact with the Ethereum network with a signer.
 pub type RetryProviderWithSigner = FillProvider<
-    JoinFill<Identity, WalletFiller<EthereumWallet>>,
-    RootProvider<RpcRetryProvider>,
-    RpcRetryProvider,
+    JoinFill<
+        JoinFill<
+            JoinFill<
+                Identity,
+                JoinFill<GasFiller, JoinFill<BlobGasFiller, JoinFill<NonceFiller, ChainIdFiller>>>,
+            >,
+            ChainIdFiller,
+        >,
+        WalletFiller<EthereumWallet>,
+    >,
+    RootProvider<RetryBackoffService<Http<Client>>>,
+    RetryBackoffService<Http<Client>>,
     Ethereum,
 >;
 
@@ -109,6 +121,10 @@ impl Poller {
 
         // Get latest block number
         let latest_block = self.provider.get_block_number().await.unwrap();
+        if None == self.last_processes_block {
+            self.last_processes_block = Some(latest_block - 100);
+        }
+        // TODO remove this line
         if latest_block <= self.last_processes_block.unwrap_or(0) {
             log::warn!(
                 "Latest block {:?} is not greater than last processed block {:?}",
@@ -135,7 +151,7 @@ impl Poller {
                     for log in logs {
                         match EventWithMetadata::from_log(log) {
                             Ok(event) => {
-                                log::trace!("[{:?}] Event received: {:?}", chunk, &event);
+                                log::debug!("[{:?}] Event received: {:?}", chunk, &event);
                                 // Send event to the channel
                                 self.tx.send(event).await?;
                             }
@@ -164,16 +180,16 @@ impl Poller {
 
     /// Start the event listener
     pub async fn start(&mut self) -> Result<()> {
-        log::debug!("Starting polling events from RPC...");
+        log::info!("Starting polling events from RPC...");
 
         loop {
             select! {
                 _ = self.cancelation_token.cancelled() => {
-                    log::info!("Events listener cancelled");
+                    log::info!("Challenger cancelled");
                     return Ok(());
                 }
                 _ = tokio::time::sleep(Duration::from_secs(POLL_INTERVAL_SEC)) => {
-                    log::trace!("Executing tick for events listener...");
+                    log::info!("Executing tick for events listener...");
                     self.poll().await?;
                 }
             }

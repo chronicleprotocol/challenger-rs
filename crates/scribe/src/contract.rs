@@ -16,10 +16,7 @@
 use std::{fmt::Debug, sync::Arc};
 
 use alloy::{
-    primitives::{Address, FixedBytes, LogData},
-    rpc::types::Log,
-    sol,
-    sol_types::SolEvent,
+    primitives::{Address, FixedBytes, LogData}, providers::Provider, rpc::types::{Log, TransactionRequest}, sol, sol_types::SolEvent
 };
 use eyre::{bail, Result, WrapErr};
 use IScribe::SchnorrData;
@@ -77,15 +74,15 @@ impl Event {
 
 #[derive(Debug)]
 pub struct EventWithMetadata {
-    event: Event,
+    pub event: Event,
     log: Log,
-    address: Address,
+    pub address: Address,
 }
 
 impl EventWithMetadata {
     /// Creates a new EventWithMetadata from a Log
     pub fn from_log(log: Log) -> Result<Self> {
-        let event = Event::from_log(log.clone())?;
+        let event: Event = Event::from_log(log.clone())?;
         let address = log.address();
 
         Ok(Self {
@@ -109,13 +106,16 @@ pub trait ScribeOptimisticProvider {
 
     /// Returns the address of the contract.
     fn address(&self) -> &Address;
+
+     /// Returns a new provider with the same signer.
+    fn get_new_provider(&self) -> Arc<RetryProviderWithSigner>;
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ScribeOptimisticProviderInstance {
     // address: Address,
     // provider: Arc<RetryProviderWithSigner>,
-    contract: ScribeOptimisticInstance<RpcRetryProvider, Arc<RetryProviderWithSigner>>,
+    pub contract: ScribeOptimisticInstance<RpcRetryProvider, Arc<RetryProviderWithSigner>>,
 }
 
 impl ScribeOptimisticProviderInstance {
@@ -155,11 +155,21 @@ impl ScribeOptimisticProvider for ScribeOptimisticProviderInstance {
         Ok(acceptable)
     }
 
+    // fn challenge_tx(&self, schnorr_data: SchnorrData) -> TransactionRequest {
+    //     self.contract
+    //     .opChallenge(schnorr_data)
+    //     .gas(200000).into_transaction_request()
+    // }
+
     async fn challenge(&self, schnorr_data: SchnorrData) -> Result<FixedBytes<32>> {
         log::debug!("{:?} Challenging OpPoke", self.contract.address());
-        self.contract
-            .opChallenge(schnorr_data)
-            .send()
+        let from_address = self.contract.address();
+        log::info!("Challenging from address: {:?}", from_address);
+        let transaction = self.contract
+        .opChallenge(schnorr_data)
+        // TODO set gas limit properly
+        .gas(200000);
+        transaction.send()
             .await?
             .watch()
             .await
@@ -169,4 +179,9 @@ impl ScribeOptimisticProvider for ScribeOptimisticProviderInstance {
     fn address(&self) -> &Address {
         self.contract.address()
     }
+
+    fn get_new_provider(&self) -> Arc<RetryProviderWithSigner> {
+        self.contract.provider().clone()
+    }
+
 }

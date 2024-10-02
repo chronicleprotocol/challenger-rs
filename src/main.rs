@@ -14,6 +14,7 @@
 //  along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use alloy::primitives::Address;
+use alloy::providers::fillers::ChainIdFiller;
 use alloy::providers::ProviderBuilder;
 use alloy::rpc::client::ClientBuilder;
 use alloy::transports::layers::RetryBackoffLayer;
@@ -31,9 +32,9 @@ use std::{env, panic, path::PathBuf, time::Duration};
 use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 
-mod wallet;
+use scribe::event_handler;
 
-// use challenger_lib::{contract::HttpScribeOptimisticProvider, metrics, Challenger};
+mod wallet;
 
 use tokio::task::JoinSet;
 use tokio::{select, signal};
@@ -126,7 +127,6 @@ async fn main() -> Result<()> {
 
     // Building tx signer for provider
     let signer = args.wallet()?.unwrap();
-
     info!(
         "Using {:?} for signing transactions.",
         signer.default_signer().address()
@@ -137,7 +137,33 @@ async fn main() -> Result<()> {
         .layer(RetryBackoffLayer::new(15, 200, 300))
         .http(args.rpc_url.parse()?);
 
-    let provider = Arc::new(ProviderBuilder::new().wallet(signer).on_client(client));
+    let provider = Arc::new(
+        ProviderBuilder::new()
+            // Add gas automatic gas field completion
+            .with_recommended_fillers()
+            // Add chain id request from rpc
+            .filler(ChainIdFiller::new(args.chain_id))
+            // Add default signer
+            .wallet(signer.clone())
+            .on_client(client),
+    );
+
+    // Create new HTTP client for flashbots
+    let flashbot_client = ClientBuilder::default()
+        .layer(RetryBackoffLayer::new(15, 200, 300))
+        .http(args.rpc_url.parse()?);
+
+    let flashbot_provider = Arc::new(
+        ProviderBuilder::new()
+            // Add gas automatic gas field completion
+            .with_recommended_fillers()
+            // Add chain id request from rpc
+            .filler(ChainIdFiller::new(args.chain_id))
+            // Add default signer
+            .wallet(signer.clone())
+            .on_client(flashbot_client),
+    );
+
 
     let mut set = JoinSet::new();
     let cancel_token = CancellationToken::new();
@@ -160,10 +186,9 @@ async fn main() -> Result<()> {
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
 
-    builder
-        .with_http_listener(addr)
-        .install()
-        .expect("failed to install Prometheus recorder");
+    let _ = builder.with_http_listener(addr).install();
+
+    // .expect("failed to install Prometheus recorder");
 
     log::info!("Starting Prometheus metrics collector on port: {}", port);
 
@@ -175,11 +200,22 @@ async fn main() -> Result<()> {
     collector.describe();
 
     let (tx, rx) = tokio::sync::mpsc::channel::<EventWithMetadata>(100);
+
+    // Create events listener
     let mut poller = Poller::new(
-        addresses,
+        addresses.clone(),
         cancel_token.clone(),
         provider.clone(),
         tx.clone(),
+    );
+
+    // Create event handler
+    let mut event_distributor = event_handler::EventDistributor::new(
+        addresses.clone(),
+        cancel_token.clone(),
+        provider.clone(),
+        flashbot_provider.clone(),
+        rx,
     );
 
     // Run events listener process
@@ -187,6 +223,14 @@ async fn main() -> Result<()> {
         log::info!("Starting events listener");
         if let Err(err) = poller.start().await {
             log::error!("Poller error: {:?}", err);
+        }
+    });
+
+    // Run event handler process
+    set.spawn(async move {
+        log::info!("Starting log handler");
+        if let Err(err) = event_distributor.start().await {
+            log::error!("Log Handler error: {:?}", err);
         }
     });
 
