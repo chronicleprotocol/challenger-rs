@@ -74,8 +74,9 @@ impl EventDistributor {
             self.txs.insert(address.clone(), tx);
 
             let mut contract_handler = ContractEventHandler::new(
-                ScribeOptimisticProviderInstance::new(address.clone(), self.provider.clone()),
-                ScribeOptimisticProviderInstance::new(address.clone(), self.flashbot_provider.clone()),
+                address.clone(),
+                self.provider.clone(),
+                self.flashbot_provider.clone(),
                 self.cancel.clone(),
                 rx,
             );
@@ -112,29 +113,28 @@ impl EventDistributor {
     }
 }
 
-struct ContractEventHandler <C>
-where
-C: ScribeOptimisticProvider + Clone + std::marker::Send + 'static+ std::marker::Sync,
+struct ContractEventHandler
 {
-    pub contract: C,
-    pub flashbot_contract: C,
-    // provider: Arc<RetryProviderWithSigner>,
-    // flashbot_provider: Arc<RetryProviderWithSigner>,
+    scribe_address: Address,
+    provider: Arc<RetryProviderWithSigner>,
+    flashbot_provider: Arc<RetryProviderWithSigner>,
     cancel: CancellationToken,
     rx: Receiver<EventWithMetadata>,
     cancel_challenge: Option<CancellationToken>,
 }
 
-impl<C: ScribeOptimisticProvider + Clone + std::marker::Send+ std::marker::Sync> ContractEventHandler<C> {
+impl ContractEventHandler {
     pub fn new(
-        contract: C,
-        flashbot_contract: C,
+        scribe_address: Address,
+        provider: Arc<RetryProviderWithSigner>,
+        flashbot_provider: Arc<RetryProviderWithSigner>,
         cancel: CancellationToken,
         rx: Receiver<EventWithMetadata>,
     ) -> Self {
         Self {
-            contract,
-            flashbot_contract,
+            scribe_address,
+            provider,
+            flashbot_provider,
             cancel,
             rx,
             cancel_challenge: None,
@@ -145,57 +145,42 @@ impl<C: ScribeOptimisticProvider + Clone + std::marker::Send+ std::marker::Sync>
         loop {
             tokio::select! {
                 _ = self.cancel.cancelled() => {
-                    log::info!("[{:?}] Cancellation requested, stopping contract handler", self.contract.address());
+                    log::info!("[{:?}] Cancellation requested, stopping contract handler", self.scribe_address);
                     break;
                 }
                 event = self.rx.recv() => {
-                    log::debug!("[{:?}] Received event: {:?}", self.contract.address(), event);
+                    log::debug!("[{:?}] Received event: {:?}", self.scribe_address, event);
 
                     match event {
                         Some(event) => {
                             match event.event {
                                 Event::OpPoked(op_poked) => {
-                                    log::debug!("[{:?}] OpPoked received", self.contract.address());
+                                    log::debug!("[{:?}] OpPoked received", self.scribe_address);
 
                                     // Cancel challenge if any
                                     self.cancel_challenge().await;
                                     log::debug!("Challenge cancelled existing");
 
                                     // Check if the schnorr signature is valid
-                                    let is_valid = self.contract.is_schnorr_signature_valid(op_poked.clone()).await?;
+                                    let is_valid = ScribeOptimisticProviderInstance::new(self.scribe_address, self.flashbot_provider.clone()).is_schnorr_signature_valid(op_poked.clone()).await?;
+                                    // let is_valid = self.contract.is_schnorr_signature_valid(op_poked.clone()).await?;
                                     if !is_valid {
                                         // Create a new challenge handler instance
-                                        // self.cancel_challenge = Some(CancellationToken::new());
-                                        // let challenge_handler = Some(Arc::new(Mutex::new(ChallengeHandler::new(
-                                        //     op_poked.schnorrData.clone(),
-                                        //     self.cancel.clone(),
-                                        //     self.cancel_challenge.as_ref().unwrap().clone(),
-                                        //     self.contract.clone(),
-                                        //     self.flashbot_contract.clone(),
-                                        // ))));
-
-
-                                        // // Spawn the asynchronous task
-                                        // tokio::spawn({
-                                        //     async move {
-                                        //     let handler = challenge_handler.as_ref().unwrap().lock().await;
-                                        //     let _ = handler.start().await;
-                                        // }});
-
-                                        let challenge_handler = ChallengeHandler::new(
-                                            op_poked.schnorrData.clone(),
+                                        self.cancel_challenge = Some(CancellationToken::new());
+                                        let challenge_handler = Some(Arc::new(Mutex::new(ChallengeHandler::new(
+                                            op_poked.schnorrData,
                                             self.cancel.clone(),
                                             self.cancel_challenge.as_ref().unwrap().clone(),
-                                            self.contract.clone(),
-                                            self.flashbot_contract.clone(),
-                                        );
-                                        let mut contract_handler_set = JoinSet::new();
-                                        contract_handler_set.spawn({
-                                            let challenge_handler = challenge_handler.clone();
-                                            async move {
-                                            // let handler = challenge_handler.as_ref().unwrap().lock().await;
-                                            let _ = challenge_handler.start().await;
-                                        }});
+                                            self.scribe_address,
+                                            self.provider.clone(),
+                                            self.flashbot_provider.clone(),
+                                        ))));
+
+                                        // Spawn the asynchronous task
+                                        tokio::spawn(async move {
+                                            let handler = challenge_handler.as_ref().unwrap().lock().await;
+                                            let _ = handler.start().await;
+                                        });
                                         log::debug!("Spawned New challneger");
                                     }
                                 }
@@ -247,41 +232,31 @@ impl<C: ScribeOptimisticProvider + Clone + std::marker::Send+ std::marker::Sync>
 // <C>
 // where
 // C: ScribeOptimisticProvider,
-#[derive(Clone)]
-struct ChallengeHandler <C>
-where
-C: ScribeOptimisticProvider + std::marker::Send + Clone, {
+struct ChallengeHandler {
     pub schnorr_data: SchnorrData,
     pub global_cancel: CancellationToken,
     pub cancel: CancellationToken,
-    pub contract: C,
-    pub flashbot_contract: C,
-    // address: Address,
-
-    // provider: Arc<RetryProviderWithSigner>,
-    // flashbot_provider: Arc<RetryProviderWithSigner>,
+    address: Address,
+    provider: Arc<RetryProviderWithSigner>,
+    flashbot_provider: Arc<RetryProviderWithSigner>,
 }
 
-impl <C: ScribeOptimisticProvider + std::marker::Send + Clone>  ChallengeHandler<C> {
+impl ChallengeHandler {
     pub fn new(
         schnorr_data: SchnorrData,
         global_cancel: CancellationToken,
         cancel: CancellationToken,
-        contract: C,
-        flashbot_contract: C,
-        // address: Address,
-        // provider: Arc<RetryProviderWithSigner>,
-        // flashbot_provider: Arc<RetryProviderWithSigner>,
+        address: Address,
+        provider: Arc<RetryProviderWithSigner>,
+        flashbot_provider: Arc<RetryProviderWithSigner>,
     ) -> Self {
         Self {
             schnorr_data,
             global_cancel,
             cancel,
-            // address,
-            // provider,
-            // flashbot_provider,
-            contract,
-            flashbot_contract,
+            address,
+            provider,
+            flashbot_provider,
         }
     }
 
@@ -305,8 +280,8 @@ impl <C: ScribeOptimisticProvider + std::marker::Send + Clone>  ChallengeHandler
                     const RETRY_RANGE_END: u64 = CLASSIC_CHALLENGE_RETRY_COUNT+FLASHBOT_CHALLENGE_RETRY_COUNT;
                     match challenge_attempts {
                         0..FLASHBOT_CHALLENGE_RETRY_COUNT => {
-                            // let contract = ScribeOptimisticProviderInstance::new(self.address, self.flashbot_provider.clone());
-                            let result = self.contract.challenge(self.schnorr_data.clone()).await;
+                            let contract = ScribeOptimisticProviderInstance::new(self.address, self.flashbot_provider.clone());
+                            let result = contract.challenge(self.schnorr_data.clone()).await;
                             log::debug!("Challenge result: {:?}", result);
                             match result {
                                 Ok(tx_hash) => {
@@ -319,8 +294,8 @@ impl <C: ScribeOptimisticProvider + std::marker::Send + Clone>  ChallengeHandler
                             }
                         }
                         FLASHBOT_CHALLENGE_RETRY_COUNT..RETRY_RANGE_END => {
-                            // let contract = ScribeOptimisticProviderInstance::new(self.address, self.provider.clone());
-                            let result = self.flashbot_contract.challenge(self.schnorr_data.clone()).await;
+                            let contract = ScribeOptimisticProviderInstance::new(self.address, self.provider.clone());
+                            let result = contract.challenge(self.schnorr_data.clone()).await;
                             log::debug!("Challenge result: {:?}", result);
                             match result {
                                 Ok(tx_hash) => {
