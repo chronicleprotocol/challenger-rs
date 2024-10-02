@@ -113,8 +113,6 @@ pub trait ScribeOptimisticProvider {
 
 #[derive(Debug, Clone)]
 pub struct ScribeOptimisticProviderInstance {
-    // address: Address,
-    // provider: Arc<RetryProviderWithSigner>,
     pub contract: ScribeOptimisticInstance<RpcRetryProvider, Arc<RetryProviderWithSigner>>,
 }
 
@@ -123,8 +121,6 @@ impl ScribeOptimisticProviderInstance {
     pub fn new(address: Address, provider: Arc<RetryProviderWithSigner>) -> Self {
         let contract = ScribeOptimistic::new(address, provider.clone());
         Self {
-            // address,
-            // provider,
             contract,
         }
     }
@@ -154,12 +150,6 @@ impl ScribeOptimisticProvider for ScribeOptimisticProviderInstance {
 
         Ok(acceptable)
     }
-
-    // fn challenge_tx(&self, schnorr_data: SchnorrData) -> TransactionRequest {
-    //     self.contract
-    //     .opChallenge(schnorr_data)
-    //     .gas(200000).into_transaction_request()
-    // }
 
     async fn challenge(&self, schnorr_data: SchnorrData) -> Result<FixedBytes<32>> {
         log::debug!("{:?} Challenging OpPoke", self.contract.address());

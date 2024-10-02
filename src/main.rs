@@ -149,6 +149,8 @@ async fn main() -> Result<()> {
     );
 
     // Create new HTTP client for flashbots
+    // TODO add flashbots url to args
+    // TODO add correct gas handling etc.
     let flashbot_client = ClientBuilder::default()
         .layer(RetryBackoffLayer::new(15, 200, 300))
         .http(args.rpc_url.parse()?);
@@ -209,7 +211,7 @@ async fn main() -> Result<()> {
         tx.clone(),
     );
 
-    // Create event handler
+    // Create event distributor
     let mut event_distributor = event_handler::EventDistributor::new(
         addresses.clone(),
         cancel_token.clone(),
@@ -226,7 +228,7 @@ async fn main() -> Result<()> {
         }
     });
 
-    // Run event handler process
+    // Run event distributor process
     set.spawn(async move {
         log::info!("Starting log handler");
         if let Err(err) = event_distributor.start().await {
@@ -252,8 +254,6 @@ async fn main() -> Result<()> {
             }
         }
     });
-
-    // TODO: Start challenger and event verifier process
 
     tokio::select! {
         _ = signal::ctrl_c() => {
