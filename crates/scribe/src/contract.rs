@@ -75,7 +75,7 @@ impl Event {
 #[derive(Debug)]
 pub struct EventWithMetadata {
     pub event: Event,
-    log: Log,
+    pub log: Log,
     pub address: Address,
 }
 

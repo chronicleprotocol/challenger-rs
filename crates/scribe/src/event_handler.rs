@@ -18,8 +18,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use alloy::primitives::Address;
-use eyre::{Context, Result};
-use tokio::sync::mpsc::{Receiver, Sender};
+use eyre::{ Context, Result };
+use tokio::sync::mpsc::{ Receiver, Sender };
 use tokio::sync::Mutex;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
@@ -27,7 +27,9 @@ use tokio_util::sync::CancellationToken;
 use crate::contract::Event;
 use crate::contract::ScribeOptimistic::OpPoked;
 use crate::contract::{
-    EventWithMetadata, ScribeOptimisticProvider, ScribeOptimisticProviderInstance,
+    EventWithMetadata,
+    ScribeOptimisticProvider,
+    ScribeOptimisticProviderInstance,
 };
 use crate::events_listener::RetryProviderWithSigner;
 
@@ -52,7 +54,7 @@ impl EventDistributor {
         cancel: CancellationToken,
         provider: Arc<RetryProviderWithSigner>,
         flashbot_provider: Arc<RetryProviderWithSigner>,
-        rx: Receiver<EventWithMetadata>,
+        rx: Receiver<EventWithMetadata>
     ) -> Self {
         Self {
             addresses,
@@ -76,7 +78,7 @@ impl EventDistributor {
                 self.provider.clone(),
                 self.flashbot_provider.clone(),
                 self.cancel.clone(),
-                rx,
+                rx
             );
             contract_handler_set.spawn(async move {
                 let _ = contract_handler.start().await;
@@ -121,7 +123,7 @@ struct EventHandler {
     cancel: CancellationToken,
     rx: Receiver<EventWithMetadata>,
     cancel_challenge: Option<CancellationToken>,
-    challenge_period: Option<u16>,
+    challenge_period: Option<u64>,
 }
 
 impl EventHandler {
@@ -130,7 +132,7 @@ impl EventHandler {
         provider: Arc<RetryProviderWithSigner>,
         flashbot_provider: Arc<RetryProviderWithSigner>,
         cancel: CancellationToken,
-        rx: Receiver<EventWithMetadata>,
+        rx: Receiver<EventWithMetadata>
     ) -> Self {
         Self {
             scribe_address,
@@ -146,22 +148,34 @@ impl EventHandler {
     pub async fn start(&mut self) -> Result<()> {
         // We have to fail if no challenge period is fetched
         self.fetch_challenge_period().await.unwrap();
-
         loop {
             tokio::select! {
                 _ = self.cancel.cancelled() => {
-                    log::info!("[{:?}] Cancellation requested, stopping contract handler", self.scribe_address);
+                    log::info!(
+                        "[{:?}] Cancellation requested, stopping contract handler",
+                        self.scribe_address
+                    );
                     break;
                 }
                 event = self.rx.recv() => {
                     log::debug!("[{:?}] Received event: {:?}", self.scribe_address, event);
-
                     match event {
                         Some(event) => {
                             match event.event {
                                 Event::OpPoked(op_poked) => {
                                     log::debug!("[{:?}] OpPoked received", self.scribe_address);
                                     // Spawn a new challenge handler
+                                    // Check if the poke is within the challenge period
+                                    let event_timestamp = event.log.block_timestamp.unwrap() as u64;
+                                    let current_timestamp = chrono::Utc::now().timestamp() as u64;
+                                    if current_timestamp - event_timestamp >
+                                        self.challenge_period.unwrap() {
+                                            log::debug!(
+                                                "[{:?}] OpPoked received outside of challenge period",
+                                                self.scribe_address
+                                            );
+                                            continue;
+                                    }
                                     self.spawn_challenge(op_poked).await;
                                 }
                                 Event::OpPokeChallengedSuccessfully(_) => {
@@ -185,12 +199,12 @@ impl EventHandler {
             return Ok(());
         }
 
-        let period =
-            ScribeOptimisticProviderInstance::new(self.scribe_address, self.provider.clone())
-                .get_challenge_period()
-                .await?;
+        let period = ScribeOptimisticProviderInstance::new(
+            self.scribe_address,
+            self.provider.clone()
+        ).get_challenge_period().await?;
 
-        self.challenge_period = Some(period);
+        self.challenge_period = Some(period as u64);
         Ok(())
     }
 
@@ -200,15 +214,21 @@ impl EventHandler {
         // Create a new cancellation token
         self.cancel_challenge = Some(CancellationToken::new());
         // Create a new challenger instance
-        let challenge_handler = Some(Arc::new(Mutex::new(ChallengeHandler::new(
-            op_poked,
-            self.cancel.clone(),
-            // cancel_challenge garunteed to be Some
-            self.cancel_challenge.as_ref().unwrap().clone(),
-            self.scribe_address,
-            self.provider.clone(),
-            self.flashbot_provider.clone(),
-        ))));
+        let challenge_handler = Some(
+            Arc::new(
+                Mutex::new(
+                    ChallengeHandler::new(
+                        op_poked,
+                        self.cancel.clone(),
+                        // cancel_challenge garunteed to be Some
+                        self.cancel_challenge.as_ref().unwrap().clone(),
+                        self.scribe_address,
+                        self.provider.clone(),
+                        self.flashbot_provider.clone()
+                    )
+                )
+            )
+        );
         // TODO: Validate challenge period first...
 
         // Spawn the asynchronous task
@@ -250,7 +270,7 @@ impl ChallengeHandler {
         cancel: CancellationToken,
         address: Address,
         provider: Arc<RetryProviderWithSigner>,
-        flashbot_provider: Arc<RetryProviderWithSigner>,
+        flashbot_provider: Arc<RetryProviderWithSigner>
     ) -> Self {
         Self {
             op_poked,
@@ -282,7 +302,10 @@ impl ChallengeHandler {
                 }
                 _ = tokio::time::sleep(Duration::from_millis(CHALLENGE_POKE_DELAY_MS)) => {
                     // Verify that the OpPoked is valid
-                    let is_valid = ScribeOptimisticProviderInstance::new(self.address, self.provider.clone()).is_schnorr_signature_valid(self.op_poked.clone()).await?;
+                    let is_valid = ScribeOptimisticProviderInstance::new(
+                        self.address,
+                        self.provider.clone()
+                    ).is_schnorr_signature_valid(self.op_poked.clone()).await?;
                     if is_valid {
                         log::debug!("OpPoked is valid, no need to challenge");
                         break;
@@ -290,8 +313,12 @@ impl ChallengeHandler {
                     const RETRY_RANGE_END: u64 = CLASSIC_CHALLENGE_RETRY_COUNT+FLASHBOT_CHALLENGE_RETRY_COUNT;
                     match challenge_attempts {
                         0..FLASHBOT_CHALLENGE_RETRY_COUNT => {
-                            let contract = ScribeOptimisticProviderInstance::new(self.address, self.flashbot_provider.clone());
-                            let result = contract.challenge(self.op_poked.schnorrData.clone()).await;
+                            let contract = ScribeOptimisticProviderInstance::new(
+                                self.address, self.flashbot_provider.clone()
+                            );
+                            let result = contract.challenge(
+                                self.op_poked.schnorrData.clone()
+                            ).await;
                             log::debug!("Challenge result: {:?}", result);
                             match result {
                                 Ok(tx_hash) => {
@@ -304,7 +331,9 @@ impl ChallengeHandler {
                             }
                         }
                         FLASHBOT_CHALLENGE_RETRY_COUNT..RETRY_RANGE_END => {
-                            let contract = ScribeOptimisticProviderInstance::new(self.address, self.provider.clone());
+                            let contract = ScribeOptimisticProviderInstance::new(
+                                self.address, self.provider.clone()
+                            );
                             let result = contract.challenge(self.op_poked.schnorrData.clone()).await;
                             log::debug!("Challenge result: {:?}", result);
                             match result {

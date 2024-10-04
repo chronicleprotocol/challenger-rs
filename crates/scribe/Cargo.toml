@@ -11,3 +11,4 @@ tokio = {workspace = true, features = ["full"]}
 tokio-util = {workspace = true}
 tower = {workspace = true, features = ["retry"]}
 metrics = { workspace = true }
+chrono = "0.4.38"
