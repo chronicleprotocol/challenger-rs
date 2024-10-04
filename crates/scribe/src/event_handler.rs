@@ -175,11 +175,13 @@ impl EventHandler {
     async fn spawn_challenge(&mut self, op_poked: OpPoked) {
         // Ensure there is no existing challenge
         self.cancel_challenge().await;
+        // Create a new cancellation token
         self.cancel_challenge = Some(CancellationToken::new());
         // Create a new challenger instance
         let challenge_handler = Some(Arc::new(Mutex::new(ChallengeHandler::new(
             op_poked,
             self.cancel.clone(),
+            // cancel_challenge garunteed to be Some
             self.cancel_challenge.as_ref().unwrap().clone(),
             self.scribe_address,
             self.provider.clone(),
@@ -211,7 +213,7 @@ struct ChallengeHandler {
     pub global_cancel: CancellationToken,
     pub cancel: CancellationToken,
     address: Address,
-    // TODO replace with ScribeOptimisticProviderInstance
+    // TODO replace with ScribeOptimisticProviderInstances
     provider: Arc<RetryProviderWithSigner>,
     flashbot_provider: Arc<RetryProviderWithSigner>,
 }
