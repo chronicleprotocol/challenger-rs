@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use alloy::primitives::Address;
-use eyre::Result;
+use eyre::{Context, Result};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::Mutex;
 use tokio::task::JoinSet;
@@ -97,7 +97,9 @@ impl EventDistributor {
                                 Some(tx) => {
                                     let _ = tx.send(event).await;
                                 }
-                                _ => {}
+                                _ => {
+                                    log::warn!("Received event for unknown address: {:?}", event.address);
+                                }
                             }
                         }
                         _ => {}
@@ -119,6 +121,7 @@ struct EventHandler {
     cancel: CancellationToken,
     rx: Receiver<EventWithMetadata>,
     cancel_challenge: Option<CancellationToken>,
+    challenge_period: Option<u16>,
 }
 
 impl EventHandler {
@@ -136,10 +139,14 @@ impl EventHandler {
             cancel,
             rx,
             cancel_challenge: None,
+            challenge_period: None,
         }
     }
 
     pub async fn start(&mut self) -> Result<()> {
+        // We have to fail if no challenge period is fetched
+        self.fetch_challenge_period().await.unwrap();
+
         loop {
             tokio::select! {
                 _ = self.cancel.cancelled() => {
@@ -172,6 +179,21 @@ impl EventHandler {
         todo!()
     }
 
+    async fn fetch_challenge_period(&mut self) -> Result<()> {
+        // TODO: Add expiration time for the challenge period
+        if self.challenge_period.is_some() {
+            return Ok(());
+        }
+
+        let period =
+            ScribeOptimisticProviderInstance::new(self.scribe_address, self.provider.clone())
+                .get_challenge_period()
+                .await?;
+
+        self.challenge_period = Some(period);
+        Ok(())
+    }
+
     async fn spawn_challenge(&mut self, op_poked: OpPoked) {
         // Ensure there is no existing challenge
         self.cancel_challenge().await;
@@ -187,6 +209,8 @@ impl EventHandler {
             self.provider.clone(),
             self.flashbot_provider.clone(),
         ))));
+        // TODO: Validate challenge period first...
+
         // Spawn the asynchronous task
         tokio::spawn(async move {
             let handler = challenge_handler.as_ref().unwrap().lock().await;
@@ -194,6 +218,7 @@ impl EventHandler {
         });
         log::debug!("Spawned New challenger");
     }
+
     async fn cancel_challenge(&mut self) {
         match &self.cancel_challenge {
             Some(cancel) => {
@@ -252,11 +277,12 @@ impl ChallengeHandler {
                 }
                 // Check if the global cancel command sent
                 _ = self.global_cancel.cancelled() => {
+                    log::debug!("Global cancel command received");
                     break;
                 }
                 _ = tokio::time::sleep(Duration::from_millis(CHALLENGE_POKE_DELAY_MS)) => {
-                    // Verify that the challenge is valid
-                    let is_valid = ScribeOptimisticProviderInstance::new(self.address, self.flashbot_provider.clone()).is_schnorr_signature_valid(self.op_poked.clone()).await?;
+                    // Verify that the OpPoked is valid
+                    let is_valid = ScribeOptimisticProviderInstance::new(self.address, self.provider.clone()).is_schnorr_signature_valid(self.op_poked.clone()).await?;
                     if is_valid {
                         log::debug!("OpPoked is valid, no need to challenge");
                         break;
