@@ -18,7 +18,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use alloy::primitives::Address;
-use eyre::{ Context, Result };
+use alloy::providers::Provider;
+use alloy::rpc::types::BlockTransactionsKind;
+use eyre::Result;
 use tokio::sync::mpsc::{ Receiver, Sender };
 use tokio::sync::Mutex;
 use tokio::task::JoinSet;
@@ -100,6 +102,7 @@ impl EventDistributor {
                                     let _ = tx.send(event).await;
                                 }
                                 _ => {
+                                    // Should never happen
                                     log::warn!("Received event for unknown address: {:?}", event.address);
                                 }
                             }
@@ -164,10 +167,28 @@ impl EventHandler {
                             match event.event {
                                 Event::OpPoked(op_poked) => {
                                     log::debug!("[{:?}] OpPoked received", self.scribe_address);
-                                    // Spawn a new challenge handler
                                     // Check if the poke is within the challenge period
-                                    let event_timestamp = event.log.block_timestamp.unwrap() as u64;
+                                    let event_timestamp = match event.log.block_timestamp {
+                                        Some(timestamp) => timestamp,
+                                        None => {
+                                            let block = self.provider.get_block(
+                                                event.log.block_number.unwrap().into(),
+                                                BlockTransactionsKind::Hashes
+                                            ).await?;
+                                            let block = match block {
+                                                Some(block) => block,
+                                                None => {
+                                                    log::error!("Block not found");
+                                                    continue;
+                                                }
+                                            };
+                                            let timestamp = block.header.timestamp;
+                                            timestamp
+                                        }
+                                    };
                                     let current_timestamp = chrono::Utc::now().timestamp() as u64;
+                                    log::debug!("[{:?}] OpPoked, event_timestamp: {:?}, current_timestamp: {:?}",
+                                        self.scribe_address, event_timestamp, current_timestamp);
                                     if current_timestamp - event_timestamp >
                                         self.challenge_period.unwrap() {
                                             log::debug!(
@@ -176,6 +197,7 @@ impl EventHandler {
                                             );
                                             continue;
                                     }
+                                    log::debug!("Spawning challenge...");
                                     self.spawn_challenge(op_poked).await;
                                 }
                                 Event::OpPokeChallengedSuccessfully(_) => {

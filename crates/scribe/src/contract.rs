@@ -16,7 +16,7 @@
 use std::{fmt::Debug, sync::Arc};
 
 use alloy::{
-    primitives::{Address, FixedBytes, LogData}, providers::Provider, rpc::types::{Log, TransactionRequest}, sol, sol_types::SolEvent
+    primitives::{Address, FixedBytes, LogData}, rpc::types::Log, sol, sol_types::SolEvent
 };
 use eyre::{bail, Result, WrapErr};
 use IScribe::SchnorrData;
