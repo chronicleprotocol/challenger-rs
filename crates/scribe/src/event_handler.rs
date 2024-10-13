@@ -186,9 +186,15 @@ impl EventHandler {
                                             timestamp
                                         }
                                     };
+
+                                    // let latest_block_number  = self.provider.get_block_number().await?;
+                                    // let latest_block = self.provider.get_block(latest_block_number.into(), BlockTransactionsKind::Hashes).await.unwrap();
+                                    // let current_timestamp = latest_block.unwrap().header.timestamp;
                                     let current_timestamp = chrono::Utc::now().timestamp() as u64;
                                     log::debug!("[{:?}] OpPoked, event_timestamp: {:?}, current_timestamp: {:?}",
                                         self.scribe_address, event_timestamp, current_timestamp);
+                                    println!("OpPoked, event_timestamp: {:?}, current_timestamp: {:?}",
+                                        event_timestamp, current_timestamp);
                                     if current_timestamp - event_timestamp >
                                         self.challenge_period.unwrap() {
                                             log::debug!(
@@ -220,12 +226,10 @@ impl EventHandler {
         if self.challenge_period.is_some() {
             return Ok(());
         }
-
         let period = ScribeOptimisticProviderInstance::new(
             self.scribe_address,
             self.provider.clone()
         ).get_challenge_period().await?;
-
         self.challenge_period = Some(period as u64);
         Ok(())
     }
@@ -380,3 +384,10 @@ impl ChallengeHandler {
         Ok(())
     }
 }
+
+// need to make a mock provider to test this
+// provider needs to be able to respond to block time
+// provider needs to be able to challenge request
+// need to be able to make provider fail challenge request
+
+// test

@@ -44,7 +44,7 @@ use crate::{
     metrics,
 };
 
-const POLL_INTERVAL_SEC: u64 = 30;
+// const POLL_INTERVAL_SEC: u64 = 30;
 const MAX_ADDRESS_PER_REQUEST: usize = 50;
 
 /// The provider type used to interact with the Ethereum network.
@@ -74,6 +74,7 @@ pub struct Poller {
     provider: Arc<RetryProviderWithSigner>,
     last_processes_block: Option<u64>,
     tx: Sender<EventWithMetadata>,
+    poll_interval_seconds: u64,
 }
 
 impl Poller {
@@ -82,6 +83,7 @@ impl Poller {
         cancelation_token: CancellationToken,
         provider: Arc<RetryProviderWithSigner>,
         tx: Sender<EventWithMetadata>,
+        poll_interval_seconds: u64,
     ) -> Self {
         Self {
             addresses,
@@ -89,6 +91,7 @@ impl Poller {
             provider,
             tx,
             last_processes_block: None,
+            poll_interval_seconds,
         }
     }
 
@@ -118,11 +121,11 @@ impl Poller {
     // Poll for new events in block range `self.last_processes_block..latest_block`
     async fn poll(&mut self) -> Result<()> {
         log::trace!("Polling for new events");
-
+        println!("Polling for new events");
         // Get latest block number
         let latest_block = self.provider.get_block_number().await.unwrap();
         if None == self.last_processes_block {
-            self.last_processes_block = Some(latest_block - 100);
+            self.last_processes_block = Some(latest_block);
         }
         // TODO remove this line
         if latest_block <= self.last_processes_block.unwrap_or(0) {
@@ -133,7 +136,7 @@ impl Poller {
             );
             return Ok(());
         }
-
+        println!("Checking blocks from {:?} to {:?}", self.last_processes_block, latest_block);
         // Split addresses into chunks of MAX_ADDRESS_PER_REQUEST to optimize amount of requests
         for chunk in self.addresses.chunks(MAX_ADDRESS_PER_REQUEST) {
             let logs = self
@@ -147,11 +150,12 @@ impl Poller {
             match logs {
                 Ok(logs) => {
                     log::debug!("[{:?}] Received {} logs", chunk, logs.len());
-
+                    println!("Received {} logs", logs.len());
                     for log in logs {
                         match EventWithMetadata::from_log(log) {
                             Ok(event) => {
                                 log::debug!("[{:?}] Event received: {:?}", chunk, &event);
+                                println!("Event received: {:?}", &event);
                                 // Send event to the channel
                                 self.tx.send(event).await?;
                             }
@@ -188,8 +192,9 @@ impl Poller {
                     log::info!("Challenger cancelled");
                     return Ok(());
                 }
-                _ = tokio::time::sleep(Duration::from_secs(POLL_INTERVAL_SEC)) => {
+                _ = tokio::time::sleep(Duration::from_secs(self.poll_interval_seconds)) => {
                     log::info!("Executing tick for events listener...");
+                    println!("Executing tick for events listener...");
                     self.poll().await?;
                 }
             }
