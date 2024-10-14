@@ -397,25 +397,29 @@ mod tests {
 
 #[cfg(test)]
 mod integration_tests {
+    use std::future::Future;
     use std::sync::Arc;
 
     use alloy::hex;
-    use alloy::network::EthereumWallet;
+    use alloy::network::{Ethereum, EthereumWallet, Network};
     use alloy::providers::ext::AnvilApi;
-    use alloy::providers::fillers::ChainIdFiller;
-    use alloy::providers::{ Provider, ProviderBuilder };
+    use alloy::providers::fillers::{BlobGasFiller, ChainIdFiller, FillProvider, GasFiller, JoinFill, NonceFiller, WalletFiller};
+    use alloy::providers::{ Identity, Provider, ProviderBuilder, RootProvider };
     use alloy::rpc::client::ClientBuilder;
     use alloy::signers::local::PrivateKeySigner;
     use alloy::signers::SignerSync;
+    use alloy::transports::http::{Client, Http};
     use alloy::transports::layers::RetryBackoffLayer;
+    use alloy::transports::Transport;
     use alloy::{ primitives::U256, sol };
-    use alloy::node_bindings::Anvil;
+    use alloy::node_bindings::{Anvil, AnvilInstance};
     use alloy::primitives::FixedBytes;
     use scribe::contract::EventWithMetadata;
     use scribe::event_handler;
     use scribe::events_listener::Poller;
     use tokio::task::JoinSet;
     use tokio_util::sync::CancellationToken;
+    use ScribeOptimisitic::ScribeOptimisiticInstance;
 
     sol!(
         #[allow(missing_docs)]
@@ -424,24 +428,15 @@ mod integration_tests {
         ScribeOptimisitic,
         "tests/fixtures/bytecode/ScribeOptimistic.json"
     );
-
     // type ConstructorArgs = sol!(uint256, address);
 
-    #[tokio::test]
-    async fn challenge() {
+    type AnvilProvider =  Arc<FillProvider<JoinFill<JoinFill<JoinFill<Identity, JoinFill<GasFiller, JoinFill<BlobGasFiller, JoinFill<NonceFiller, ChainIdFiller>>>>, WalletFiller<EthereumWallet>>, ChainIdFiller>, RootProvider<Http<Client>>, Http<Client>, Ethereum>>;
 
-        // ------------------------------------------------------------------------------------------------------------
-        // create anvil instance
-        // create provider
-        // create scribe instance
-        // set bar
-        // create lift validator args
-        // lift validator
-
-        let anvil: alloy::node_bindings::AnvilInstance = Anvil::new().port(8545 as u16).chain_id(31337).block_time_f64(0.1).try_spawn().expect("Failed to spawn anvil");
+    async fn create_anvil_instances(private_key: &str) -> (AnvilInstance, AnvilProvider, EthereumWallet) {
+        let anvil: AnvilInstance = Anvil::new().port(8545 as u16).chain_id(31337).block_time_f64(0.1).try_spawn().expect("Failed to spawn anvil");
         // random private key
-        let private_key = "d4cf162c2e26ff75095922ea108d516ff07bdd732f050e64ced632980f11320b";
-        let signer = EthereumWallet::new(private_key.parse::<PrivateKeySigner>().unwrap());
+        // let private_key = "d4cf162c2e26ff75095922ea108d516ff07bdd732f050e64ced632980f11320b";
+        let signer: EthereumWallet = EthereumWallet::new(private_key.parse::<PrivateKeySigner>().unwrap());
 
         let anvil_provider = Arc::new(
             ProviderBuilder::new()
@@ -464,18 +459,18 @@ mod integration_tests {
         anvil_provider.anvil_mine(Some(U256::from(3)), Some(U256::from(3))).await.expect("Failed to mine");
         anvil_provider.anvil_impersonate_account(signer.default_signer().address().clone()).await.expect("Failed to impersonate account");
 
+        return (anvil, anvil_provider, signer)
+    }
+
+    async fn deploy_scribe<P : Provider<T, N>, T : Clone + Transport, N : Network>(provider: P, signer: EthereumWallet) -> ScribeOptimisiticInstance<T, P, N> {
+        // deploy scribe instance
         let initial_authed = signer.default_signer().address();
         let wat: [u8; 32] = hex!("
             0123456789abcdef0123456789abcdef
             0123456789abcdef0123456789abcdef
         ");
-
-        // set to a low current time for now, this avoids having stale poke error later
-        anvil_provider.anvil_set_time(1000).await.expect("Failed to set time");
-
-        // deploy scribe instance
         let scribe_optimisitic = ScribeOptimisitic
-            ::deploy(anvil_provider.clone(), initial_authed.clone(), FixedBytes(wat).clone());
+            ::deploy(provider, initial_authed.clone(), FixedBytes(wat).clone());
         let scribe_optimisitic = scribe_optimisitic.await.unwrap();
 
         let receipt = scribe_optimisitic.setBar(1);
@@ -503,6 +498,47 @@ mod integration_tests {
         let receipt = receipt.send().await.expect("Failed to lift validator");
         receipt.watch().await.expect("Failed to set opChallenge");
 
+        return scribe_optimisitic;
+    }
+
+    #[tokio::test]
+    async fn challenge() {
+
+        // ------------------------------------------------------------------------------------------------------------
+
+        // let anvil: alloy::node_bindings::AnvilInstance = Anvil::new().port(8545 as u16).chain_id(31337).block_time_f64(0.1).try_spawn().expect("Failed to spawn anvil");
+        // random private key
+        let private_key = "d4cf162c2e26ff75095922ea108d516ff07bdd732f050e64ced632980f11320b";
+        // let signer: EthereumWallet = EthereumWallet::new(private_key.parse::<PrivateKeySigner>().unwrap());
+
+        // let anvil_provider = Arc::new(
+        //     ProviderBuilder::new()
+        //         .with_recommended_fillers()
+        //         .wallet(signer.clone())
+        //         .filler(ChainIdFiller::new(Some(31337)))
+        //         .on_http(anvil.endpoint_url())
+        // );
+
+        // // set initial balance for deployer
+        // anvil_provider.anvil_set_balance(
+        //     signer.default_signer().address(),
+        //     U256::from_str_radix(
+        //         "1000000000000000000000000000000000000000", 10
+        //     ).unwrap()
+        // ).await.expect("Unable to set balance");
+
+        // // configure anvil settings
+        // anvil_provider.anvil_set_auto_mine(true).await.expect("Failed to set auto mine");
+        // anvil_provider.anvil_mine(Some(U256::from(3)), Some(U256::from(3))).await.expect("Failed to mine");
+        // anvil_provider.anvil_impersonate_account(signer.default_signer().address().clone()).await.expect("Failed to impersonate account");
+
+        let (anvil, anvil_provider, signer) = create_anvil_instances(private_key).await;
+        // set to a low current time for now, this avoids having stale poke error later
+        anvil_provider.anvil_set_time(1000).await.expect("Failed to set time");
+
+        // deploy scribe instance
+        let scribe_optimisitic = deploy_scribe(anvil_provider.clone(), signer.clone()).await;
+
         // deposit some balance for challenge testing
         anvil_provider.anvil_set_balance(
             scribe_optimisitic.address().clone(),
@@ -510,6 +546,8 @@ mod integration_tests {
                 "1000000000000000000000000000000000000000", 10
             ).unwrap()
         ).await.expect("Unable to set balance");
+
+        // Update current anvil time to be far from last scribe config update
         let current_timestamp = chrono::Utc::now().timestamp() as u64 - 100;
         anvil_provider.anvil_set_time(current_timestamp).await.expect("Failed to set time");
 
@@ -521,7 +559,7 @@ mod integration_tests {
 
         let client = ClientBuilder::default()
         .layer(RetryBackoffLayer::new(15, 200, 300))
-        .http(anvil.endpoint_url());
+        .http( anvil.endpoint_url());
 
         let provider = Arc::new(
             ProviderBuilder::new()
