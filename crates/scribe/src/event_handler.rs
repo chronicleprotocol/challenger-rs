@@ -193,8 +193,6 @@ impl EventHandler {
                                     let current_timestamp = chrono::Utc::now().timestamp() as u64;
                                     log::debug!("[{:?}] OpPoked, event_timestamp: {:?}, current_timestamp: {:?}",
                                         self.scribe_address, event_timestamp, current_timestamp);
-                                    println!("OpPoked, event_timestamp: {:?}, current_timestamp: {:?}",
-                                        event_timestamp, current_timestamp);
                                     if current_timestamp - event_timestamp >
                                         self.challenge_period.unwrap() {
                                             log::debug!(

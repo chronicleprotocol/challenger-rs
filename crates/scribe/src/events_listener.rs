@@ -121,7 +121,6 @@ impl Poller {
     // Poll for new events in block range `self.last_processes_block..latest_block`
     async fn poll(&mut self) -> Result<()> {
         log::trace!("Polling for new events");
-        println!("Polling for new events");
         // Get latest block number
         let latest_block = self.provider.get_block_number().await.unwrap();
         if None == self.last_processes_block {
@@ -136,7 +135,6 @@ impl Poller {
             );
             return Ok(());
         }
-        println!("Checking blocks from {:?} to {:?}", self.last_processes_block, latest_block);
         // Split addresses into chunks of MAX_ADDRESS_PER_REQUEST to optimize amount of requests
         for chunk in self.addresses.chunks(MAX_ADDRESS_PER_REQUEST) {
             let logs = self
@@ -150,12 +148,10 @@ impl Poller {
             match logs {
                 Ok(logs) => {
                     log::debug!("[{:?}] Received {} logs", chunk, logs.len());
-                    println!("Received {} logs", logs.len());
                     for log in logs {
                         match EventWithMetadata::from_log(log) {
                             Ok(event) => {
                                 log::debug!("[{:?}] Event received: {:?}", chunk, &event);
-                                println!("Event received: {:?}", &event);
                                 // Send event to the channel
                                 self.tx.send(event).await?;
                             }
@@ -194,7 +190,6 @@ impl Poller {
                 }
                 _ = tokio::time::sleep(Duration::from_secs(self.poll_interval_seconds)) => {
                     log::info!("Executing tick for events listener...");
-                    println!("Executing tick for events listener...");
                     self.poll().await?;
                 }
             }
