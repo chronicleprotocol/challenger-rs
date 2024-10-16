@@ -530,6 +530,81 @@ mod integration_tests {
         panic!("Failed to challenge");
     }
 
+    #[tokio::test]
+    async fn dont_challenge_outside_challenge_period() {
+        testing_logger::setup();
+        // Test an invalid poke on multiple scribe instances is successfully challenged
+        // ------------------------------------------------------------------------------------------------------------
+        let private_key = "d4cf162c2e26ff75095922ea108d516ff07bdd732f050e64ced632980f11320b";
+        let (anvil, anvil_provider, signer) = create_anvil_instances(private_key).await;
+
+        // set to a low current time for now, this avoids having stale poke error later
+        anvil_provider.anvil_set_time(1000).await.expect("Failed to set time");
+
+        // deploy scribe instance
+        let scribe_optimistic = deploy_scribe(anvil_provider.clone(), signer.clone()).await;
+        anvil_provider
+            .anvil_set_balance(
+                scribe_optimistic.address().clone(),
+                U256::from_str_radix("1000000000000000000000000000000000000000", 10).unwrap()
+            ).await
+            .expect("Unable to set balance");
+        // Update current anvil time to be far from last scribe config update
+        let current_timestamp = (chrono::Utc::now().timestamp() as u64) - 100;
+        anvil_provider.anvil_set_time(current_timestamp).await.expect("Failed to set time");
+
+        // ------------------------------------------------------------------------------------------------------------
+        let cancel_token: CancellationToken = CancellationToken::new();
+
+        // start the event listener as a sub process
+        {
+            let addresses = vec![scribe_optimistic.address().clone()];
+            let cancel_token = cancel_token.clone();
+            let url = anvil.endpoint_url();
+            let signer = signer.clone();
+            tokio::spawn(async move {
+                start_event_listener(url, signer, cancel_token, addresses).await;
+            });
+        }
+        // Let first poll occur on poller
+        tokio::time::sleep(tokio::time::Duration::from_millis(1200)).await;
+
+        // Increase current block count to move away from poller intialisation block
+        anvil_provider
+            .anvil_mine(Some(U256::from(1)), Some(U256::from(1))).await
+            .expect("Failed to mine");
+
+        // ------------------------------------------------------------------------------------------------------------
+        // Assert that the current contract balance is not 0
+        let balance = anvil_provider
+            .get_balance(scribe_optimistic.address().clone()).await
+            .expect("Failed to get balance");
+        assert_ne!(balance, U256::from(0));
+
+        // Make invalid poke, but set the age way in the past
+        let current_timestamp = (chrono::Utc::now().timestamp() as u64) - 1000;
+        make_invalid_op_poke(current_timestamp, private_key, &scribe_optimistic).await;
+
+
+        // Mine at least one block to ensure log is processed
+        anvil_provider
+            .anvil_mine(Some(U256::from(1)), Some(U256::from(1))).await
+            .expect("Failed to mine");
+
+        // TODO nead to poll till contains
+        // Ensure the challenge was never created
+        testing_logger::validate( |captured_logs| {
+            let mut found: bool = false;
+            for log in captured_logs {
+                assert!(!log.body.to_lowercase().contains(&"Challenge started".to_lowercase()), "Challenge started log found");
+                found |= log.body.to_lowercase().contains(&"OpPoked received outside of challenge period".to_lowercase());
+            }
+            assert!(found, "Challenge cancelled log not fuond");
+        });
+
+    }
+
+
     // test dont challenge if outside challenge period
 
     // test dont challenge if receive op challenged
@@ -608,6 +683,7 @@ mod integration_tests {
         let receipt = receipt.send().await.expect("Failed to set bar");
         receipt.watch().await.expect("Failed to set bar");
 
+        // TODO generate the public key and v r s
         // lift validator
         let pub_key = LibSecp256k1::Point {
             x: U256::from_str_radix(
