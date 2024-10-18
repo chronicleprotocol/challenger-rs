@@ -383,11 +383,9 @@ mod tests {
 mod integration_tests {
     use core::panic;
     use std::cell::Cell;
-    use std::future::Future;
     use std::sync::Arc;
     use std::vec;
 
-    use alloy::dyn_abi::abi::token;
     use alloy::hex;
     use alloy::network::{ Ethereum, EthereumWallet, Network };
     use alloy::providers::ext::AnvilApi;
@@ -408,25 +406,33 @@ mod integration_tests {
     use alloy::transports::http::{ Client, Http };
     use alloy::transports::layers::RetryBackoffLayer;
     use alloy::transports::Transport;
-    use alloy::{ primitives::U256, sol };
+    use alloy::primitives::U256;
     use alloy::node_bindings::{ Anvil, AnvilInstance };
     use alloy::primitives::{ Address, FixedBytes };
-    use futures_util::SinkExt;
-    use log::Level;
     use scribe::contract::EventWithMetadata;
     use scribe::event_handler;
-    use scribe::events_listener::{ Poller, RetryProviderWithSigner };
+    use scribe::events_listener::Poller;
     use tokio::task::JoinSet;
     use tokio_util::sync::CancellationToken;
-    use ScribeOptimisitic::ScribeOptimisiticInstance;
-
-    sol!(
-        #[allow(missing_docs)]
-        #[sol(rpc)]
-        #[derive(Debug)]
+    use scribe_optimistic::{
+        IScribe,
+        LibSecp256k1,
         ScribeOptimisitic,
-        "tests/fixtures/bytecode/ScribeOptimistic.json"
-    );
+        ScribeOptimisitic::ScribeOptimisiticInstance,
+    };
+
+    // In a seperate module to problems with autoformatter
+    #[rustfmt::skip]
+    mod scribe_optimistic {
+        use alloy::sol;
+        sol!(
+            #[allow(missing_docs)]
+            #[sol(rpc)]
+            #[derive(Debug)]
+            ScribeOptimisitic,
+            "tests/fixtures/bytecode/ScribeOptimistic.json"
+        );
+    }
 
     type AnvilProvider = Arc<
         FillProvider<
@@ -449,6 +455,8 @@ mod integration_tests {
         >
     >;
 
+    const PRIVATE_KEY: &str = "d4cf162c2e26ff75095922ea108d516ff07bdd732f050e64ced632980f11320b";
+
     // -- Tests --
 
     #[tokio::test]
@@ -456,7 +464,7 @@ mod integration_tests {
         // Test an invalid poke on multiple scribe instances is successfully challenged
         const NUM_SCRIBE_INSTANCES: usize = 10;
         // ------------------------------------------------------------------------------------------------------------
-        let private_key = "d4cf162c2e26ff75095922ea108d516ff07bdd732f050e64ced632980f11320b";
+        let private_key = PRIVATE_KEY;
         let (anvil, anvil_provider, signer) = create_anvil_instances(private_key, 8545).await;
 
         // set to a low current time for now, this avoids having stale poke error later
@@ -524,6 +532,24 @@ mod integration_tests {
             result &= poll_balance_is_zero(&anvil_provider, &scribe_addresses[i], 10).await;
         }
 
+        // Poll to check that the challenge started log is found
+        for _ in 1..5 {
+            let success = Cell::new(false);
+            testing_logger::validate(|captured_logs| {
+                let mut found: bool = false;
+                for log in captured_logs {
+                    found |= log.body
+                        .to_lowercase()
+                        .contains(&"Challenge started".to_lowercase());
+                }
+                success.set(found);
+            });
+            if success.get() {
+                return;
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+        }
+
         // Poll the contract for up to 5 seconds to ensure that the challenge was successfull by querying balance
         if result {
             cancel_token.cancel();
@@ -538,7 +564,7 @@ mod integration_tests {
         testing_logger::setup();
         // Test an invalid poke on multiple scribe instances is successfully challenged
         // ------------------------------------------------------------------------------------------------------------
-        let private_key = "d4cf162c2e26ff75095922ea108d516ff07bdd732f050e64ced632980f11320b";
+        let private_key = PRIVATE_KEY;
         let (anvil, anvil_provider, signer) = create_anvil_instances(private_key, 8546).await;
 
         // set to a low current time for now, this avoids having stale poke error later
@@ -594,7 +620,8 @@ mod integration_tests {
             .anvil_mine(Some(U256::from(1)), Some(U256::from(1))).await
             .expect("Failed to mine");
 
-        // TODO nead to poll till contains
+        // Poll till expected logs are found
+        // Assert challenge started log not found
         // Ensure the challenge was never created
         for _ in 1..5 {
             let success = Cell::new(false);
@@ -619,7 +646,6 @@ mod integration_tests {
         panic!("Failed to find log");
     }
 
-
     // TODO: test dont challenge if receive op challenged
 
     // TODO: test flashbotnused first, fallback to normal rpc
@@ -636,8 +662,7 @@ mod integration_tests {
             .block_time_f64(0.1)
             .try_spawn()
             .expect("Failed to spawn anvil");
-        // random private key
-        // let private_key = "d4cf162c2e26ff75095922ea108d516ff07bdd732f050e64ced632980f11320b";
+
         let signer: EthereumWallet = EthereumWallet::new(
             private_key.parse::<PrivateKeySigner>().unwrap()
         );

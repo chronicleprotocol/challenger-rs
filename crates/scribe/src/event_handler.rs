@@ -195,6 +195,7 @@ impl EventHandler {
                                         self.scribe_address, event_timestamp, current_timestamp);
                                     if current_timestamp - event_timestamp >
                                         self.challenge_period.unwrap() {
+                                            // This log is expected in tests, tests must be updated if log is changed
                                             log::debug!(
                                                 "[{:?}] OpPoked received outside of challenge period",
                                                 self.scribe_address
@@ -308,6 +309,7 @@ impl ChallengeHandler {
     }
 
     pub async fn start(&self) -> Result<()> {
+        // This checked for in tests, tests must be updated if log is changed
         log::debug!("Challenge started");
         // Perform the challenge after 200ms
 
@@ -383,10 +385,3 @@ impl ChallengeHandler {
         Ok(())
     }
 }
-
-// need to make a mock provider to test this
-// provider needs to be able to respond to block time
-// provider needs to be able to challenge request
-// need to be able to make provider fail challenge request
-
-// test
