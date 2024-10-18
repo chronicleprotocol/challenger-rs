@@ -421,7 +421,7 @@ mod integration_tests {
         ScribeOptimisitic::ScribeOptimisiticInstance,
     };
 
-    // In a seperate module to problems with autoformatter
+    // In a seperate module due to problems with autoformatter
     #[rustfmt::skip]
     mod scribe_optimistic {
         use alloy::sol;
@@ -484,6 +484,7 @@ mod integration_tests {
                 ).await
                 .expect("Unable to set balance");
         }
+
         // Update current anvil time to be far from last scribe config update
         let current_timestamp = (chrono::Utc::now().timestamp() as u64) - 100;
         anvil_provider.anvil_set_time(current_timestamp).await.expect("Failed to set time");
@@ -527,14 +528,17 @@ mod integration_tests {
             .anvil_mine(Some(U256::from(1)), Some(U256::from(1))).await
             .expect("Failed to mine");
 
+
+        // Poll the contract for up to 5 seconds to ensure that the challenge was successfull by querying balance
         let mut result = true;
         for i in 0..NUM_SCRIBE_INSTANCES {
-            result &= poll_balance_is_zero(&anvil_provider, &scribe_addresses[i], 10).await;
+            result &= poll_balance_is_zero(&anvil_provider, &scribe_addresses[i], 5).await;
         }
 
-        // Poll to check that the challenge started log is found
-        for _ in 1..5 {
-            let success = Cell::new(false);
+        // Poll to check that the challenge started log is found,
+        // (to ensure log hasn't been changed as its non appearance is looked for in other tests)
+        for i in 0..5 {
+            let success: Cell<bool> = Cell::new(false);
             testing_logger::validate(|captured_logs| {
                 let mut found: bool = false;
                 for log in captured_logs {
@@ -545,12 +549,14 @@ mod integration_tests {
                 success.set(found);
             });
             if success.get() {
-                return;
+                break;
             }
             tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+            if i == 4 {
+                panic!("Failed to find log");
+            }
         }
 
-        // Poll the contract for up to 5 seconds to ensure that the challenge was successfull by querying balance
         if result {
             cancel_token.cancel();
             return;
@@ -565,12 +571,13 @@ mod integration_tests {
         // Test an invalid poke on multiple scribe instances is successfully challenged
         // ------------------------------------------------------------------------------------------------------------
         let private_key = PRIVATE_KEY;
+        // Use a new port for each test to avoid conflicts if tests run in parrallel
         let (anvil, anvil_provider, signer) = create_anvil_instances(private_key, 8546).await;
 
-        // set to a low current time for now, this avoids having stale poke error later
+        // Set to a low current time for now, this avoids having stale poke error later
         anvil_provider.anvil_set_time(1000).await.expect("Failed to set time");
 
-        // deploy scribe instance
+        // Deploy scribe instance
         let scribe_optimistic = deploy_scribe(anvil_provider.clone(), signer.clone()).await;
         anvil_provider
             .anvil_set_balance(
@@ -578,8 +585,9 @@ mod integration_tests {
                 U256::from_str_radix("1000000000000000000000000000000000000000", 10).unwrap()
             ).await
             .expect("Unable to set balance");
+
         // Update current anvil time to be far from last scribe config update
-        // Set the anvil time to be way in the past
+        // Set the anvil time to be in the past to ensure the challenge period is exceeded later
         let current_timestamp = (chrono::Utc::now().timestamp() as u64) - 400;
         anvil_provider.anvil_set_time(current_timestamp).await.expect("Failed to set time");
 
