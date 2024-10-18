@@ -266,6 +266,7 @@ impl EventHandler {
     async fn cancel_challenge(&mut self) {
         match &self.cancel_challenge {
             Some(cancel) => {
+                log::debug!("Cancelling existing challenge");
                 cancel.cancel();
                 self.cancel_challenge = None;
             }

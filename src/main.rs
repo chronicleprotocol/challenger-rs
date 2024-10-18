@@ -283,7 +283,7 @@ mod tests {
         let cli = Cli {
             addresses: vec![],
             raw_secret_key: Some(
-                "def90b5b5cb2d68c5cd9de7b3e6d767cbb1b8d5fd8560bd6c42cbc4a4da30b16".to_string(),
+                "def90b5b5cb2d68c5cd9de7b3e6d767cbb1b8d5fd8560bd6c42cbc4a4da30b16".to_string()
             ),
             chain_id: None,
             keystore_path: None,
@@ -304,7 +304,7 @@ mod tests {
         let cli = Cli {
             addresses: vec![],
             raw_secret_key: Some(
-                "0xdef90b5b5cb2d68c5cd9de7b3e6d767cbb1b8d5fd8560bd6c42cbc4a4da30b16".to_string(),
+                "0xdef90b5b5cb2d68c5cd9de7b3e6d767cbb1b8d5fd8560bd6c42cbc4a4da30b16".to_string()
             ),
             chain_id: None,
             keystore_path: None,
@@ -325,11 +325,13 @@ mod tests {
     #[test]
     fn keystore_works_with_password_in_file() {
         let keystore = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/keystore");
-        let keystore_file = keystore
-            .join("UTC--2022-12-20T10-30-43.591916000Z--ec554aeafe75601aaab43bd4621a22284db566c2");
+        let keystore_file = keystore.join(
+            "UTC--2022-12-20T10-30-43.591916000Z--ec554aeafe75601aaab43bd4621a22284db566c2"
+        );
 
-        let keystore_password_file =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/keystore/password");
+        let keystore_password_file = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+            "tests/fixtures/keystore/password"
+        );
 
         let cli = Cli {
             addresses: vec![],
@@ -353,8 +355,9 @@ mod tests {
     #[test]
     fn keystore_works_with_raw_password() {
         let keystore = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/keystore");
-        let keystore_file = keystore
-            .join("UTC--2022-12-20T10-30-43.591916000Z--ec554aeafe75601aaab43bd4621a22284db566c2");
+        let keystore_file = keystore.join(
+            "UTC--2022-12-20T10-30-43.591916000Z--ec554aeafe75601aaab43bd4621a22284db566c2"
+        );
 
         let cli = Cli {
             addresses: vec![],
@@ -374,7 +377,6 @@ mod tests {
             address!("ec554aeafe75601aaab43bd4621a22284db566c2")
         );
     }
-
 }
 
 #[cfg(test)]
@@ -500,8 +502,8 @@ mod integration_tests {
             .expect("Failed to mine");
 
         // ------------------------------------------------------------------------------------------------------------
-        for i in 0..NUM_SCRIBE_INSTANCES{
-             // Assert that the current contract balance is not 0
+        for i in 0..NUM_SCRIBE_INSTANCES {
+            // Assert that the current contract balance is not 0
             let balance = anvil_provider
                 .get_balance(scribe_addresses[i]).await
                 .expect("Failed to get balance");
@@ -509,7 +511,7 @@ mod integration_tests {
             let current_timestamp = (chrono::Utc::now().timestamp() as u64) - 100;
 
             // Make invalid poke
-            make_invalid_op_poke(current_timestamp,private_key, &scribes[i]).await;
+            make_invalid_op_poke(current_timestamp, private_key, &scribes[i]).await;
         }
 
         // Mine at least one block to ensure log is processed
@@ -518,7 +520,7 @@ mod integration_tests {
             .expect("Failed to mine");
 
         let mut result = true;
-        for i in 0..NUM_SCRIBE_INSTANCES{
+        for i in 0..NUM_SCRIBE_INSTANCES {
             result &= poll_balance_is_zero(&anvil_provider, &scribe_addresses[i], 10).await;
         }
 
@@ -584,7 +586,7 @@ mod integration_tests {
         assert_ne!(balance, U256::from(0));
 
         // Make invalid poke, but since the anvil time is not in sync with chrono time will be in the past
-        let current_timestamp = (chrono::Utc::now().timestamp() as u64);
+        let current_timestamp = chrono::Utc::now().timestamp() as u64;
         make_invalid_op_poke(current_timestamp - 500, private_key, &scribe_optimistic).await;
 
         // Mine at least one block to ensure log is processed
@@ -596,11 +598,16 @@ mod integration_tests {
         // Ensure the challenge was never created
         for _ in 1..5 {
             let success = Cell::new(false);
-            testing_logger::validate( |captured_logs| {
+            testing_logger::validate(|captured_logs| {
                 let mut found: bool = false;
                 for log in captured_logs {
-                    assert!(!log.body.to_lowercase().contains(&"Challenge started".to_lowercase()), "Challenge started log found");
-                    found |= log.body.to_lowercase().contains(&"OpPoked received outside of challenge period".to_lowercase());
+                    assert!(
+                        !log.body.to_lowercase().contains(&"Challenge started".to_lowercase()),
+                        "Challenge started log found"
+                    );
+                    found |= log.body
+                        .to_lowercase()
+                        .contains(&"OpPoked received outside of challenge period".to_lowercase());
                 }
                 success.set(found);
             });
@@ -610,110 +617,18 @@ mod integration_tests {
             tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
         }
         panic!("Failed to find log");
-
-
-
-    }
-
-        #[tokio::test]
-    async fn dont_challenge_outside_challenge_period() {
-        testing_logger::setup();
-        // Test an invalid poke on multiple scribe instances is successfully challenged
-        // ------------------------------------------------------------------------------------------------------------
-        let private_key = "d4cf162c2e26ff75095922ea108d516ff07bdd732f050e64ced632980f11320b";
-        let (anvil, anvil_provider, signer) = create_anvil_instances(private_key, 8546).await;
-
-        // set to a low current time for now, this avoids having stale poke error later
-        anvil_provider.anvil_set_time(1000).await.expect("Failed to set time");
-
-        // deploy scribe instance
-        let scribe_optimistic = deploy_scribe(anvil_provider.clone(), signer.clone()).await;
-        anvil_provider
-            .anvil_set_balance(
-                scribe_optimistic.address().clone(),
-                U256::from_str_radix("1000000000000000000000000000000000000000", 10).unwrap()
-            ).await
-            .expect("Unable to set balance");
-        // Update current anvil time to be far from last scribe config update
-        // Set the anvil time to be way in the past
-        let current_timestamp = (chrono::Utc::now().timestamp() as u64) - 400;
-        anvil_provider.anvil_set_time(current_timestamp).await.expect("Failed to set time");
-
-        // ------------------------------------------------------------------------------------------------------------
-        let cancel_token: CancellationToken = CancellationToken::new();
-
-        // start the event listener as a sub process
-        {
-            let addresses = vec![scribe_optimistic.address().clone()];
-            let cancel_token = cancel_token.clone();
-            let url = anvil.endpoint_url();
-            let signer = signer.clone();
-            tokio::spawn(async move {
-                start_event_listener(url, signer, cancel_token, addresses).await;
-            });
-        }
-        // Let first poll occur on poller
-        tokio::time::sleep(tokio::time::Duration::from_millis(1200)).await;
-
-        // Increase current block count to move away from poller intialisation block
-        anvil_provider
-            .anvil_mine(Some(U256::from(1)), Some(U256::from(1))).await
-            .expect("Failed to mine");
-
-        // ------------------------------------------------------------------------------------------------------------
-        // Assert that the current contract balance is not 0
-        let balance = anvil_provider
-            .get_balance(scribe_optimistic.address().clone()).await
-            .expect("Failed to get balance");
-        assert_ne!(balance, U256::from(0));
-
-        // Make invalid poke, but since the anvil time is not in sync with chrono time will be in the past
-        let current_timestamp = (chrono::Utc::now().timestamp() as u64);
-        make_invalid_op_poke(current_timestamp - 500, private_key, &scribe_optimistic).await;
-
-        // Mine at least one block to ensure log is processed
-        anvil_provider
-            .anvil_mine(Some(U256::from(1)), Some(U256::from(1))).await
-            .expect("Failed to mine");
-
-        // TODO nead to poll till contains
-        // Ensure the challenge was never created
-        for _ in 1..5 {
-            let success = Cell::new(false);
-            testing_logger::validate( |captured_logs| {
-                let mut found: bool = false;
-                for log in captured_logs {
-                    assert!(!log.body.to_lowercase().contains(&"Challenge started".to_lowercase()), "Challenge started log found");
-                    found |= log.body.to_lowercase().contains(&"OpPoked received outside of challenge period".to_lowercase());
-                }
-                success.set(found);
-            });
-            if success.get() {
-                return;
-            }
-            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-        }
-        panic!("Failed to find log");
-
-
-
     }
 
 
-    // test dont challenge if outside challenge period
+    // TODO: test dont challenge if receive op challenged
 
-    // test dont challenge if receive op challenged
-
-    // test dont challenge if received new op poke
-
-    // test flashbotnused first
-
-    // test fallback to normal rpc
+    // TODO: test flashbotnused first, fallback to normal rpc
 
     // -- Helper functions --
 
     async fn create_anvil_instances(
-        private_key: &str, port: u16
+        private_key: &str,
+        port: u16
     ) -> (AnvilInstance, AnvilProvider, EthereumWallet) {
         let anvil: AnvilInstance = Anvil::new()
             .port(port)
@@ -779,7 +694,7 @@ mod integration_tests {
         let receipt = receipt.send().await.expect("Failed to set bar");
         receipt.watch().await.expect("Failed to set bar");
 
-        // TODO generate the public key and v r s
+        // TODO generate the public key and v r s from private key
         // lift validator
         let pub_key = LibSecp256k1::Point {
             x: U256::from_str_radix(
@@ -895,7 +810,7 @@ mod integration_tests {
     }
 
     async fn make_invalid_op_poke(
-        age : u64,
+        age: u64,
         private_key: &str,
         scribe_optimisitic: &ScribeOptimisiticInstance<Http<Client>, AnvilProvider, Ethereum>
     ) {
