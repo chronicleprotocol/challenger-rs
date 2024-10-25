@@ -21,7 +21,7 @@ use alloy::primitives::Address;
 use alloy::providers::Provider;
 use alloy::rpc::types::BlockTransactionsKind;
 use eyre::Result;
-use tokio::sync::mpsc::{ Receiver, Sender };
+use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::Mutex;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
@@ -29,9 +29,7 @@ use tokio_util::sync::CancellationToken;
 use crate::contract::Event;
 use crate::contract::ScribeOptimistic::OpPoked;
 use crate::contract::{
-    EventWithMetadata,
-    ScribeOptimisticProvider,
-    ScribeOptimisticProviderInstance,
+    EventWithMetadata, ScribeOptimisticProvider, ScribeOptimisticProviderInstance,
 };
 use crate::events_listener::RetryProviderWithSigner;
 
@@ -56,7 +54,7 @@ impl EventDistributor {
         cancel: CancellationToken,
         provider: Arc<RetryProviderWithSigner>,
         flashbot_provider: Arc<RetryProviderWithSigner>,
-        rx: Receiver<EventWithMetadata>
+        rx: Receiver<EventWithMetadata>,
     ) -> Self {
         Self {
             addresses,
@@ -80,7 +78,7 @@ impl EventDistributor {
                 self.provider.clone(),
                 self.flashbot_provider.clone(),
                 self.cancel.clone(),
-                rx
+                rx,
             );
             contract_handler_set.spawn(async move {
                 let _ = contract_handler.start().await;
@@ -135,7 +133,7 @@ impl EventHandler {
         provider: Arc<RetryProviderWithSigner>,
         flashbot_provider: Arc<RetryProviderWithSigner>,
         cancel: CancellationToken,
-        rx: Receiver<EventWithMetadata>
+        rx: Receiver<EventWithMetadata>,
     ) -> Self {
         Self {
             scribe_address,
@@ -225,10 +223,10 @@ impl EventHandler {
         if self.challenge_period.is_some() {
             return Ok(());
         }
-        let period = ScribeOptimisticProviderInstance::new(
-            self.scribe_address,
-            self.provider.clone()
-        ).get_challenge_period().await?;
+        let period =
+            ScribeOptimisticProviderInstance::new(self.scribe_address, self.provider.clone())
+                .get_challenge_period()
+                .await?;
         self.challenge_period = Some(period as u64);
         Ok(())
     }
@@ -239,21 +237,15 @@ impl EventHandler {
         // Create a new cancellation token
         self.cancel_challenge = Some(CancellationToken::new());
         // Create a new challenger instance
-        let challenge_handler = Some(
-            Arc::new(
-                Mutex::new(
-                    ChallengeHandler::new(
-                        op_poked,
-                        self.cancel.clone(),
-                        // cancel_challenge garunteed to be Some
-                        self.cancel_challenge.as_ref().unwrap().clone(),
-                        self.scribe_address,
-                        self.provider.clone(),
-                        self.flashbot_provider.clone()
-                    )
-                )
-            )
-        );
+        let challenge_handler = Some(Arc::new(Mutex::new(ChallengeHandler::new(
+            op_poked,
+            self.cancel.clone(),
+            // cancel_challenge garunteed to be Some
+            self.cancel_challenge.as_ref().unwrap().clone(),
+            self.scribe_address,
+            self.provider.clone(),
+            self.flashbot_provider.clone(),
+        ))));
         // TODO: Validate challenge period first...
 
         // Spawn the asynchronous task
@@ -296,7 +288,7 @@ impl ChallengeHandler {
         cancel: CancellationToken,
         address: Address,
         provider: Arc<RetryProviderWithSigner>,
-        flashbot_provider: Arc<RetryProviderWithSigner>
+        flashbot_provider: Arc<RetryProviderWithSigner>,
     ) -> Self {
         Self {
             op_poked,
@@ -313,7 +305,6 @@ impl ChallengeHandler {
         log::debug!("Challenge started");
         // Perform the challenge after 200ms
 
-        // TODO: better way to retry !!!!!!!!!!!!!!
         let mut challenge_attempts: u64 = 0;
         loop {
             tokio::select! {

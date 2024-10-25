@@ -16,7 +16,10 @@
 use std::{fmt::Debug, sync::Arc};
 
 use alloy::{
-    primitives::{Address, FixedBytes, LogData}, rpc::types::Log, sol, sol_types::SolEvent
+    primitives::{Address, FixedBytes, LogData},
+    rpc::types::Log,
+    sol,
+    sol_types::SolEvent,
 };
 use eyre::{bail, Result, WrapErr};
 use IScribe::SchnorrData;
@@ -107,7 +110,7 @@ pub trait ScribeOptimisticProvider {
     /// Returns the address of the contract.
     fn address(&self) -> &Address;
 
-     /// Returns a new provider with the same signer.
+    /// Returns a new provider with the same signer.
     fn get_new_provider(&self) -> Arc<RetryProviderWithSigner>;
 }
 
@@ -120,9 +123,7 @@ impl ScribeOptimisticProviderInstance {
     /// Creates a new ScribeOptimisticInstance
     pub fn new(address: Address, provider: Arc<RetryProviderWithSigner>) -> Self {
         let contract = ScribeOptimistic::new(address, provider.clone());
-        Self {
-            contract,
-        }
+        Self { contract }
     }
 }
 
@@ -155,11 +156,13 @@ impl ScribeOptimisticProvider for ScribeOptimisticProviderInstance {
         log::debug!("{:?} Challenging OpPoke", self.contract.address());
         let from_address = self.contract.address();
         log::info!("Challenging from address: {:?}", from_address);
-        let transaction = self.contract
-        .opChallenge(schnorr_data)
-        // TODO set gas limit properly
-        .gas(200000);
-        transaction.send()
+        let transaction = self
+            .contract
+            .opChallenge(schnorr_data)
+            // TODO set gas limit properly
+            .gas(200000);
+        transaction
+            .send()
             .await?
             .watch()
             .await
@@ -173,5 +176,4 @@ impl ScribeOptimisticProvider for ScribeOptimisticProviderInstance {
     fn get_new_provider(&self) -> Arc<RetryProviderWithSigner> {
         self.contract.provider().clone()
     }
-
 }

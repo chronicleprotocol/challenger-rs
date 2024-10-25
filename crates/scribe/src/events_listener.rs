@@ -20,8 +20,8 @@ use alloy::{
     primitives::Address,
     providers::{
         fillers::{
-            BlobGasFiller, ChainIdFiller, FillProvider, GasFiller, JoinFill,
-            NonceFiller, WalletFiller,
+            BlobGasFiller, ChainIdFiller, FillProvider, GasFiller, JoinFill, NonceFiller,
+            WalletFiller,
         },
         Identity, Provider, RootProvider, WalletProvider,
     },
