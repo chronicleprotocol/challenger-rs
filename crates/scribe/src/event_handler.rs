@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use alloy::primitives::Address;
-use alloy::providers::Provider;
+use alloy::providers::{Provider, WalletProvider};
 use alloy::rpc::types::BlockTransactionsKind;
 use eyre::Result;
 use tokio::sync::mpsc::{Receiver, Sender};
@@ -185,6 +185,7 @@ impl EventHandler {
                                         }
                                     };
 
+                                    // Commented code left incase we need to cahnge to using chain as source of truth of time
                                     // let latest_block_number  = self.provider.get_block_number().await?;
                                     // let latest_block = self.provider.get_block(latest_block_number.into(), BlockTransactionsKind::Hashes).await.unwrap();
                                     // let current_timestamp = latest_block.unwrap().header.timestamp;
@@ -304,6 +305,7 @@ impl ChallengeHandler {
         // This checked for in tests, tests must be updated if log is changed
         log::debug!("Challenge started");
         // Perform the challenge after 200ms
+        let provider = Mutex::new(self.provider.clone());
 
         let mut challenge_attempts: u64 = 0;
         loop {
@@ -331,9 +333,12 @@ impl ChallengeHandler {
                     const RETRY_RANGE_END: u64 = CLASSIC_CHALLENGE_RETRY_COUNT+FLASHBOT_CHALLENGE_RETRY_COUNT;
                     match challenge_attempts {
                         0..FLASHBOT_CHALLENGE_RETRY_COUNT => {
+
                             let contract = ScribeOptimisticProviderInstance::new(
                                 self.address, self.flashbot_provider.clone()
                             );
+
+
                             let result = contract.challenge(
                                 self.op_poked.schnorrData.clone()
                             ).await;

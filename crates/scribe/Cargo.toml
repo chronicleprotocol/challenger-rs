@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 alloy = {workspace = true, features = ["full"]}
 eyre = {workspace = true}
+once_cell = "1.10.0"
 log = {workspace = true}
 tokio = {workspace = true, features = ["full"]}
 tokio-util = {workspace = true}

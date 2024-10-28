@@ -21,7 +21,9 @@ use alloy::{
     sol,
     sol_types::SolEvent,
 };
+use once_cell::sync::Lazy;
 use eyre::{bail, Result, WrapErr};
+use tokio::sync::Mutex;
 use IScribe::SchnorrData;
 use ScribeOptimistic::{OpPoked, ScribeOptimisticInstance};
 
@@ -127,6 +129,7 @@ impl ScribeOptimisticProviderInstance {
     }
 }
 
+
 impl ScribeOptimisticProvider for ScribeOptimisticProviderInstance {
     async fn get_challenge_period(&self) -> Result<u16> {
         Ok(self.contract.opChallengePeriod().call().await?._0)
@@ -152,7 +155,13 @@ impl ScribeOptimisticProvider for ScribeOptimisticProviderInstance {
         Ok(acceptable)
     }
 
+
     async fn challenge(&self, schnorr_data: SchnorrData) -> Result<FixedBytes<32>> {
+        // This ensures only one challenge is happening at a time,
+        // (this way multiple signed transactions with same nonce aren't sent)
+        // static CHALLENGE_GAURD: Lazy<tokio::sync::Mutex<()>> = Lazy::new(|| tokio::sync::Mutex::new(()));
+        // let _gaurd = CHALLENGE_GAURD.lock().await;
+
         log::debug!("{:?} Challenging OpPoke", self.contract.address());
         let from_address = self.contract.address();
         log::info!("Challenging from address: {:?}", from_address);

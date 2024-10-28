@@ -3452,6 +3452,7 @@ dependencies = [
  "eyre",
  "log",
  "metrics",
+ "once_cell",
  "tokio",
  "tokio-util",
  "tower 0.5.1",
