@@ -18,9 +18,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use alloy::primitives::Address;
-use alloy::providers::{Provider, WalletProvider};
+use alloy::providers::Provider;
 use alloy::rpc::types::BlockTransactionsKind;
-use eyre::Result;
+use eyre::{bail, Result};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::Mutex;
 use tokio::task::JoinSet;
@@ -37,8 +37,8 @@ const CHALLENGE_POKE_DELAY_MS: u64 = 200;
 const FLASHBOT_CHALLENGE_RETRY_COUNT: u64 = 3;
 const CLASSIC_CHALLENGE_RETRY_COUNT: u64 = 3;
 
-// Take event logs and distribute them to the appropriate contract handler
-// Each scribe address has its own contract handler instance
+// Takes event logs and distributes them to the appropriate contract handler
+// Each `ScribeOptimistic` instance deployed to address has its own `EventHandler` process.
 pub struct EventDistributor {
     addresses: Vec<Address>,
     cancel: CancellationToken,
@@ -71,10 +71,10 @@ impl EventDistributor {
         // Create a contract handler for each scribe address
         for address in &self.addresses {
             let (tx, rx) = tokio::sync::mpsc::channel::<EventWithMetadata>(100);
-            self.txs.insert(address.clone(), tx);
+            self.txs.insert(*address, tx);
 
-            let mut contract_handler = EventHandler::new(
-                address.clone(),
+            let mut contract_handler = ScribeEventsProcessor::new(
+                *address,
                 self.provider.clone(),
                 self.flashbot_provider.clone(),
                 self.cancel.clone(),
@@ -91,21 +91,17 @@ impl EventDistributor {
                     break;
                 }
                 event = self.rx.recv() => {
-                    match event {
-                        Some(event) => {
-                            event.address;
-                            // Send the event to the appropriate contract handler
-                            match self.txs.get(&event.address) {
-                                Some(tx) => {
-                                    let _ = tx.send(event).await;
-                                }
-                                _ => {
-                                    // Should never happen
-                                    log::warn!("Received event for unknown address: {:?}", event.address);
-                                }
+                    if let Some(event) = event {
+                        // Send the event to the appropriate contract handler
+                        match self.txs.get(&event.address) {
+                            Some(tx) => {
+                                let _ = tx.send(event).await;
+                            }
+                            _ => {
+                                // Should never happen
+                                log::warn!("Received event for unknown address: {:?}", event.address);
                             }
                         }
-                        _ => {}
                     }
                 }
             }
@@ -116,18 +112,19 @@ impl EventDistributor {
     }
 }
 
-// Receive events for a specific scribe address and create or cancel challenge processes
-struct EventHandler {
-    scribe_address: Address,
+// Receives preparsed [crate::contract::EventWithMetadata] events for a `ScribeOptimistic` instance on address,
+// validates `OpPoked` events and challenges them if they are invalid and within the challenge period.
+struct ScribeEventsProcessor {
+    address: Address,
     provider: Arc<RetryProviderWithSigner>,
     flashbot_provider: Arc<RetryProviderWithSigner>,
-    cancel: CancellationToken,
+    cancellation_token: CancellationToken,
     rx: Receiver<EventWithMetadata>,
     cancel_challenge: Option<CancellationToken>,
     challenge_period: Option<u64>,
 }
 
-impl EventHandler {
+impl ScribeEventsProcessor {
     pub fn new(
         scribe_address: Address,
         provider: Arc<RetryProviderWithSigner>,
@@ -136,10 +133,10 @@ impl EventHandler {
         rx: Receiver<EventWithMetadata>,
     ) -> Self {
         Self {
-            scribe_address,
+            address: scribe_address,
             provider,
             flashbot_provider,
-            cancel,
+            cancellation_token: cancel,
             rx,
             cancel_challenge: None,
             challenge_period: None,
@@ -149,74 +146,109 @@ impl EventHandler {
     pub async fn start(&mut self) -> Result<()> {
         // We have to fail if no challenge period is fetched
         self.fetch_challenge_period().await.unwrap();
+
         loop {
             tokio::select! {
-                _ = self.cancel.cancelled() => {
+                // main process terminates, need to finish work and exit...
+                _ = self.cancellation_token.cancelled() => {
                     log::info!(
                         "[{:?}] Cancellation requested, stopping contract handler",
-                        self.scribe_address
+                        self.address
                     );
-                    break;
+                    return Ok(());
                 }
+                // new [EventWithMetadata] received, process it...
                 event = self.rx.recv() => {
-                    log::debug!("[{:?}] Received event: {:?}", self.scribe_address, event);
-                    match event {
-                        Some(event) => {
-                            match event.event {
-                                Event::OpPoked(op_poked) => {
-                                    log::debug!("[{:?}] OpPoked received", self.scribe_address);
-                                    // Check if the poke is within the challenge period
-                                    let event_timestamp = match event.log.block_timestamp {
-                                        Some(timestamp) => timestamp,
-                                        None => {
-                                            let block = self.provider.get_block(
-                                                event.log.block_number.unwrap().into(),
-                                                BlockTransactionsKind::Hashes
-                                            ).await?;
-                                            let block = match block {
-                                                Some(block) => block,
-                                                None => {
-                                                    log::error!("Block not found");
-                                                    continue;
-                                                }
-                                            };
-                                            let timestamp = block.header.timestamp;
-                                            timestamp
-                                        }
-                                    };
+                    log::debug!("[{:?}] Received event: {:?}", self.address, event);
 
-                                    // Commented code left incase we need to cahnge to using chain as source of truth of time
-                                    // let latest_block_number  = self.provider.get_block_number().await?;
-                                    // let latest_block = self.provider.get_block(latest_block_number.into(), BlockTransactionsKind::Hashes).await.unwrap();
-                                    // let current_timestamp = latest_block.unwrap().header.timestamp;
-                                    let current_timestamp = chrono::Utc::now().timestamp() as u64;
-                                    log::debug!("[{:?}] OpPoked, event_timestamp: {:?}, current_timestamp: {:?}",
-                                        self.scribe_address, event_timestamp, current_timestamp);
-                                    if current_timestamp - event_timestamp >
-                                        self.challenge_period.unwrap() {
-                                            // This log is expected in tests, tests must be updated if log is changed
-                                            log::debug!(
-                                                "[{:?}] OpPoked received outside of challenge period",
-                                                self.scribe_address
-                                            );
-                                            continue;
-                                    }
-                                    log::debug!("Spawning challenge...");
-                                    self.spawn_challenge(op_poked).await;
-                                }
-                                Event::OpPokeChallengedSuccessfully(_) => {
-                                    self.cancel_challenge().await;
+                    if let Some(event) = event {
+                        match &event.event {
+                            // For `OpPoked` events, check if `schnorr_signature` is valid,
+                            // if not - check if event is within the challenge period, send challenge.
+                            // If `schnorr_signature` is valid, do nothing.
+                            Event::OpPoked(op_poked) => {
+                                log::debug!("[{:?}] OpPoked received", self.address);
+
+                                if let Err(err) = self.process_op_poked(event.clone(), op_poked.clone()).await {
+                                    log::error!(
+                                        "[{:?}] Error processing OpPoked event: {:?}",
+                                        self.address,
+                                        err
+                                    );
                                 }
                             }
-                        }
-                        _ => {
-                            // if event is None
+                            // If the challenge is already successful, cancel the previous challenge process
+                            Event::OpPokeChallengedSuccessfully(_) => {
+                                self.cancel_challenge().await;
+                            }
                         }
                     }
                 }
             }
         }
-        todo!()
+    }
+
+    async fn process_op_poked(
+        &mut self,
+        event: EventWithMetadata,
+        op_poked: OpPoked,
+    ) -> Result<()> {
+        // Check if the poke is within the challenge period
+        let event_timestamp = match event.log.block_timestamp {
+            Some(timestamp) => timestamp,
+            None => self.get_timestamp_from_block(&event).await?,
+        };
+
+        let current_timestamp = chrono::Utc::now().timestamp() as u64;
+        log::debug!(
+            "[{:?}] OpPoked, event_timestamp: {:?}, current_timestamp: {:?}",
+            self.address,
+            event_timestamp,
+            current_timestamp
+        );
+        if current_timestamp - event_timestamp > self.challenge_period.unwrap() {
+            // This log is expected in tests, tests must be updated if log message is changed
+            log::debug!(
+                "[{:?}] OpPoked received outside of challenge period",
+                self.address
+            );
+            return Ok(());
+        }
+        log::debug!("Spawning challenge...");
+        self.spawn_challenge(op_poked).await;
+
+        Ok(())
+    }
+
+    // Gets the timestamp from the block by `event.log.block_number`, if it is missing, returns an error
+    async fn get_timestamp_from_block(&self, event: &EventWithMetadata) -> Result<u64> {
+        // Possible block number to be missing for unconfirmed blocks
+        if event.log.block_number.is_none() {
+            bail!(
+                "[{:?}] Block number is missing for log {:?}",
+                self.address,
+                event.log
+            );
+        }
+        let block_number = event.log.block_number.unwrap();
+
+        let block = self
+            .provider
+            .get_block(block_number.into(), BlockTransactionsKind::Hashes)
+            .await?;
+
+        let block = match block {
+            Some(block) => block,
+            None => {
+                bail!(
+                    "[{:?}] Block with number {:?} not found",
+                    self.address,
+                    block_number
+                );
+            }
+        };
+
+        Ok(block.header.timestamp)
     }
 
     async fn fetch_challenge_period(&mut self) -> Result<()> {
@@ -224,10 +256,9 @@ impl EventHandler {
         if self.challenge_period.is_some() {
             return Ok(());
         }
-        let period =
-            ScribeOptimisticProviderInstance::new(self.scribe_address, self.provider.clone())
-                .get_challenge_period()
-                .await?;
+        let period = ScribeOptimisticProviderInstance::new(self.address, self.provider.clone())
+            .get_challenge_period()
+            .await?;
         self.challenge_period = Some(period as u64);
         Ok(())
     }
@@ -238,12 +269,12 @@ impl EventHandler {
         // Create a new cancellation token
         self.cancel_challenge = Some(CancellationToken::new());
         // Create a new challenger instance
-        let challenge_handler = Some(Arc::new(Mutex::new(ChallengeHandler::new(
+        let challenge_handler = Some(Arc::new(Mutex::new(ChallengeSender::new(
             op_poked,
-            self.cancel.clone(),
+            self.cancellation_token.clone(),
             // cancel_challenge garunteed to be Some
             self.cancel_challenge.as_ref().unwrap().clone(),
-            self.scribe_address,
+            self.address,
             self.provider.clone(),
             self.flashbot_provider.clone(),
         ))));
@@ -254,17 +285,14 @@ impl EventHandler {
             let handler = challenge_handler.as_ref().unwrap().lock().await;
             let _ = handler.start().await;
         });
-        log::debug!("Spawned New challenger");
+        log::debug!("[{:?}] Spawned New challenger process", self.address);
     }
 
     async fn cancel_challenge(&mut self) {
-        match &self.cancel_challenge {
-            Some(cancel) => {
-                log::debug!("Cancelling existing challenge");
-                cancel.cancel();
-                self.cancel_challenge = None;
-            }
-            _ => {}
+        if let Some(cancel) = &self.cancel_challenge {
+            log::debug!("[{:?}] Cancelling existing challenge", self.address);
+            cancel.cancel();
+            self.cancel_challenge = None;
         }
     }
 }
@@ -272,7 +300,7 @@ impl EventHandler {
 // Handle the challenge process for a specific OpPoked event after a delay
 // If cancelled before end of delay or inbewteen retries stop process
 // First try challenge with flashbot provider, then with normal provider
-struct ChallengeHandler {
+struct ChallengeSender {
     pub op_poked: OpPoked,
     pub global_cancel: CancellationToken,
     pub cancel: CancellationToken,
@@ -282,7 +310,7 @@ struct ChallengeHandler {
     flashbot_provider: Arc<RetryProviderWithSigner>,
 }
 
-impl ChallengeHandler {
+impl ChallengeSender {
     pub fn new(
         op_poked: OpPoked,
         global_cancel: CancellationToken,
@@ -303,21 +331,19 @@ impl ChallengeHandler {
 
     pub async fn start(&self) -> Result<()> {
         // This checked for in tests, tests must be updated if log is changed
-        log::debug!("Challenge started");
+        log::debug!("[{:?}] Challenge started", self.address);
         // Perform the challenge after 200ms
-        let provider = Mutex::new(self.provider.clone());
-
         let mut challenge_attempts: u64 = 0;
         loop {
             tokio::select! {
                 // Check if the challenge has been cancelled
                 _ = self.cancel.cancelled() => {
-                    log::debug!("Challenge cancelled");
+                    log::debug!("[{:?}] Challenge cancelled", self.address);
                     break;
                 }
                 // Check if the global cancel command sent
                 _ = self.global_cancel.cancelled() => {
-                    log::debug!("Global cancel command received");
+                    log::debug!("[{:?}] Global cancel command received", self.address);
                     break;
                 }
                 _ = tokio::time::sleep(Duration::from_millis(CHALLENGE_POKE_DELAY_MS)) => {
@@ -326,10 +352,12 @@ impl ChallengeHandler {
                         self.address,
                         self.provider.clone()
                     ).is_schnorr_signature_valid(self.op_poked.clone()).await?;
+
                     if is_valid {
-                        log::debug!("OpPoked is valid, no need to challenge");
+                        log::debug!("[{:?}] OpPoked is valid, no need to challenge", self.address);
                         break;
                     }
+
                     const RETRY_RANGE_END: u64 = CLASSIC_CHALLENGE_RETRY_COUNT+FLASHBOT_CHALLENGE_RETRY_COUNT;
                     match challenge_attempts {
                         0..FLASHBOT_CHALLENGE_RETRY_COUNT => {
@@ -342,14 +370,13 @@ impl ChallengeHandler {
                             let result = contract.challenge(
                                 self.op_poked.schnorrData.clone()
                             ).await;
-                            log::debug!("Challenge result: {:?}", result);
                             match result {
                                 Ok(tx_hash) => {
-                                    log::debug!("Flashbot transaction sent: {:?}", tx_hash);
+                                    log::debug!("[{:?}] Flashbot transaction sent: {:?}", self.address, tx_hash);
                                     break;
                                 }
                                 Err(e) => {
-                                    log::error!("Failed to send flashbot transaction: {:?}", e);
+                                    log::error!("[{:?}] Failed to send flashbot transaction: {:?}", self.address, e);
                                 }
                             }
                         }
@@ -357,20 +384,18 @@ impl ChallengeHandler {
                             let contract = ScribeOptimisticProviderInstance::new(
                                 self.address, self.provider.clone()
                             );
-                            let result = contract.challenge(self.op_poked.schnorrData.clone()).await;
-                            log::debug!("Challenge result: {:?}", result);
-                            match result {
+                            match contract.challenge(self.op_poked.schnorrData.clone()).await {
                                 Ok(tx_hash) => {
-                                    log::debug!("Challenge transaction sent: {:?}", tx_hash);
+                                    log::debug!("[{:?}] Challenge transaction sent: {:?}", self.address, tx_hash);
                                     break;
                                 }
                                 Err(e) => {
-                                    log::error!("Failed to send challenge transaction: {:?}", e);
+                                    log::error!("[{:?}] Failed to send challenge transaction: {:?}", self.address, e);
                                 }
                             }
                         }
                         _ => {
-                            log::debug!("Challenge failed");
+                            log::error!("[{:?}] Challenge failed, total attempts {:?}", self.address, challenge_attempts);
                             break;
                         }
                     }

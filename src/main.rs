@@ -14,7 +14,7 @@
 //  along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use alloy::primitives::Address;
-use alloy::providers::fillers::{ CachedNonceManager, ChainIdFiller, NonceFiller };
+use alloy::providers::fillers::{CachedNonceManager, ChainIdFiller, NonceFiller};
 use alloy::providers::ProviderBuilder;
 use alloy::rpc::client::ClientBuilder;
 use alloy::transports::layers::RetryBackoffLayer;
@@ -22,13 +22,13 @@ use clap::Parser;
 use env_logger::Env;
 
 use eyre::Result;
-use log::{ error, info };
+use log::{error, info};
 use scribe::contract::EventWithMetadata;
 use scribe::events_listener::Poller;
 use scribe::metrics;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::{ env, panic, path::PathBuf, time::Duration };
+use std::{env, panic, path::PathBuf, time::Duration};
 use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 
@@ -37,17 +37,16 @@ use scribe::event_handler;
 mod wallet;
 
 use tokio::task::JoinSet;
-use tokio::{ select, signal };
+use tokio::{select, signal};
 
-use wallet::{ CustomWallet, KeystoreWallet, PrivateKeyWallet };
+use wallet::{CustomWallet, KeystoreWallet, PrivateKeyWallet};
 
 use metrics_exporter_prometheus::PrometheusBuilder;
 use metrics_process::Collector;
 
+/// Cli interface for the challenger.
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
-/// Challenger searches for `opPoked` events for `ScribeOptimistic` contract.
-/// Verifies poke schnorr signature and challenges it, if it's invalid.
 struct Cli {
     #[arg(
         short = 'a',
@@ -59,7 +58,10 @@ struct Cli {
     #[arg(long, help = "Node HTTP RPC_URL, normally starts with https://****")]
     rpc_url: String,
 
-    #[arg(long, help = "Flashbot Node HTTP RPC_URL, normally starts with https://****")]
+    #[arg(
+        long,
+        help = "Flashbot Node HTTP RPC_URL, normally starts with https://****"
+    )]
     flashbot_rpc_url: String,
 
     #[arg(
@@ -75,7 +77,11 @@ struct Cli {
     )]
     keystore_path: Option<PathBuf>,
 
-    #[arg(long = "password", requires = "keystore_path", help = "Key raw password as text")]
+    #[arg(
+        long = "password",
+        requires = "keystore_path",
+        help = "Key raw password as text"
+    )]
     raw_password: Option<String>,
 
     #[arg(
@@ -86,7 +92,10 @@ struct Cli {
     )]
     password_file: Option<PathBuf>,
 
-    #[arg(long, help = "If no chain_id provided binary will try to get chain_id from given RPC")]
+    #[arg(
+        long,
+        help = "If no chain_id provided binary will try to get chain_id from given RPC"
+    )]
     chain_id: Option<u64>,
 }
 
@@ -123,7 +132,10 @@ async fn main() -> Result<()> {
 
     // Building tx signer for provider
     let signer = args.wallet()?.unwrap();
-    info!("Using {:?} for signing transactions.", signer.default_signer().address());
+    info!(
+        "Using {:?} for signing transactions.",
+        signer.default_signer().address()
+    );
     let nonce_mananger = NonceFiller::<CachedNonceManager>::default();
 
     // Create new HTTP client with retry backoff layer
@@ -140,7 +152,7 @@ async fn main() -> Result<()> {
             .filler(nonce_mananger.clone())
             // Add default signer
             .wallet(signer.clone())
-            .on_client(client)
+            .on_client(client),
     );
 
     // Create new HTTP client for flashbots
@@ -158,7 +170,7 @@ async fn main() -> Result<()> {
             .filler(nonce_mananger.clone())
             // Add default signer
             .wallet(signer.clone())
-            .on_client(flashbot_client)
+            .on_client(flashbot_client),
     );
 
     // let signer_lock = Arc::new(Mutex::new(signer));
@@ -177,7 +189,10 @@ async fn main() -> Result<()> {
     // Register Prometheus metrics
     let builder = PrometheusBuilder::new();
 
-    let port = env::var("HTTP_PORT").unwrap_or(String::from("9090")).parse::<u16>().unwrap();
+    let port = env::var("HTTP_PORT")
+        .unwrap_or(String::from("9090"))
+        .parse::<u16>()
+        .unwrap();
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
 
     let _ = builder.with_http_listener(addr).install();
@@ -201,7 +216,7 @@ async fn main() -> Result<()> {
         cancel_token.clone(),
         provider.clone(),
         tx.clone(),
-        30
+        30,
     );
 
     // Create event distributor
@@ -210,7 +225,7 @@ async fn main() -> Result<()> {
         cancel_token.clone(),
         provider.clone(),
         flashbot_provider.clone(),
-        rx
+        rx,
     );
 
     // Run events listener process
@@ -287,7 +302,7 @@ mod tests {
         let cli = Cli {
             addresses: vec![],
             raw_secret_key: Some(
-                "def90b5b5cb2d68c5cd9de7b3e6d767cbb1b8d5fd8560bd6c42cbc4a4da30b16".to_string()
+                "def90b5b5cb2d68c5cd9de7b3e6d767cbb1b8d5fd8560bd6c42cbc4a4da30b16".to_string(),
             ),
             chain_id: None,
             keystore_path: None,
@@ -308,7 +323,7 @@ mod tests {
         let cli = Cli {
             addresses: vec![],
             raw_secret_key: Some(
-                "0xdef90b5b5cb2d68c5cd9de7b3e6d767cbb1b8d5fd8560bd6c42cbc4a4da30b16".to_string()
+                "0xdef90b5b5cb2d68c5cd9de7b3e6d767cbb1b8d5fd8560bd6c42cbc4a4da30b16".to_string(),
             ),
             chain_id: None,
             keystore_path: None,
@@ -329,13 +344,11 @@ mod tests {
     #[test]
     fn keystore_works_with_password_in_file() {
         let keystore = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/keystore");
-        let keystore_file = keystore.join(
-            "UTC--2022-12-20T10-30-43.591916000Z--ec554aeafe75601aaab43bd4621a22284db566c2"
-        );
+        let keystore_file = keystore
+            .join("UTC--2022-12-20T10-30-43.591916000Z--ec554aeafe75601aaab43bd4621a22284db566c2");
 
-        let keystore_password_file = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
-            "tests/fixtures/keystore/password"
-        );
+        let keystore_password_file =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/keystore/password");
 
         let cli = Cli {
             addresses: vec![],
@@ -359,9 +372,8 @@ mod tests {
     #[test]
     fn keystore_works_with_raw_password() {
         let keystore = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/keystore");
-        let keystore_file = keystore.join(
-            "UTC--2022-12-20T10-30-43.591916000Z--ec554aeafe75601aaab43bd4621a22284db566c2"
-        );
+        let keystore_file = keystore
+            .join("UTC--2022-12-20T10-30-43.591916000Z--ec554aeafe75601aaab43bd4621a22284db566c2");
 
         let cli = Cli {
             addresses: vec![],
@@ -392,27 +404,21 @@ mod integration_tests {
     use std::vec;
 
     use alloy::hex;
-    use alloy::network::{ Ethereum, EthereumWallet, Network, NetworkWallet };
-    use alloy::node_bindings::{ Anvil, AnvilInstance };
+    use alloy::network::{Ethereum, EthereumWallet, Network};
+    use alloy::node_bindings::{Anvil, AnvilInstance};
     use alloy::primitives::U256;
-    use alloy::primitives::{ Address, FixedBytes };
+    use alloy::primitives::{Address, FixedBytes};
     use alloy::providers::ext::AnvilApi;
     use alloy::providers::fillers::{
-        BlobGasFiller,
-        CachedNonceManager,
-        ChainIdFiller,
-        FillProvider,
-        GasFiller,
-        JoinFill,
-        NonceFiller,
-        WalletFiller,
+        BlobGasFiller, CachedNonceManager, ChainIdFiller, FillProvider, GasFiller, JoinFill,
+        NonceFiller, WalletFiller,
     };
-    use alloy::providers::{ Identity, Provider, ProviderBuilder, RootProvider };
+    use alloy::providers::{Identity, Provider, ProviderBuilder, RootProvider};
     use alloy::rpc::client::ClientBuilder;
     use alloy::signers::local::PrivateKeySigner;
     use alloy::signers::SignerSync;
     use alloy::transports::http::reqwest::Url;
-    use alloy::transports::http::{ Client, Http };
+    use alloy::transports::http::{Client, Http};
     use alloy::transports::layers::RetryBackoffLayer;
     use alloy::transports::Transport;
     use futures_util::future::join_all;
@@ -420,10 +426,7 @@ mod integration_tests {
     use scribe::event_handler;
     use scribe::events_listener::Poller;
     use scribe_optimistic::{
-        IScribe,
-        LibSecp256k1,
-        ScribeOptimisitic,
-        ScribeOptimisitic::ScribeOptimisiticInstance,
+        IScribe, LibSecp256k1, ScribeOptimisitic, ScribeOptimisitic::ScribeOptimisiticInstance,
     };
     use tokio::task::JoinSet;
     use tokio_util::sync::CancellationToken;
@@ -450,19 +453,19 @@ mod integration_tests {
                             Identity,
                             JoinFill<
                                 GasFiller,
-                                JoinFill<BlobGasFiller, JoinFill<NonceFiller, ChainIdFiller>>
-                            >
+                                JoinFill<BlobGasFiller, JoinFill<NonceFiller, ChainIdFiller>>,
+                            >,
                         >,
-                        WalletFiller<EthereumWallet>
+                        WalletFiller<EthereumWallet>,
                     >,
-                    ChainIdFiller
+                    ChainIdFiller,
                 >,
-                NonceFiller<CachedNonceManager>
+                NonceFiller<CachedNonceManager>,
             >,
             RootProvider<Http<Client>>,
             Http<Client>,
-            Ethereum
-        >
+            Ethereum,
+        >,
     >;
 
     const PRIVATE_KEY: &str = "d4cf162c2e26ff75095922ea108d516ff07bdd732f050e64ced632980f11320b";
@@ -480,14 +483,19 @@ mod integration_tests {
         let (anvil, anvil_provider, signer) = create_anvil_instances(private_key, 8545).await;
 
         // set to a low current time for now, this avoids having stale poke error later
-        anvil_provider.anvil_set_time(1000).await.expect("Failed to set time");
+        anvil_provider
+            .anvil_set_time(1000)
+            .await
+            .expect("Failed to set time");
 
         let mut deployments = vec![];
         let mut scribes = vec![];
         for i in 0..NUM_SCRIBE_INSTANCES {
-            deployments.push(
-                deploy_scribe(anvil_provider.clone(), signer.clone(), CHALLENGE_PERIOD)
-            );
+            deployments.push(deploy_scribe(
+                anvil_provider.clone(),
+                signer.clone(),
+                CHALLENGE_PERIOD,
+            ));
             // Only deploy at most 20 in parrallel
             if i % 20 == 0 {
                 scribes.append(&mut join_all(deployments).await);
@@ -501,12 +509,10 @@ mod integration_tests {
         for i in 0..NUM_SCRIBE_INSTANCES {
             let scribe_optimistic = &scribes[i];
             scribe_addresses.push(scribe_optimistic.address().clone());
-            balance_updates.push(
-                anvil_provider.anvil_set_balance(
-                    scribes[i].address().clone(),
-                    U256::from_str_radix("1000000000000000000000000000000000000000", 10).unwrap()
-                )
-            );
+            balance_updates.push(anvil_provider.anvil_set_balance(
+                scribes[i].address().clone(),
+                U256::from_str_radix("1000000000000000000000000000000000000000", 10).unwrap(),
+            ));
         }
         for balance_update in join_all(balance_updates).await {
             balance_update.expect("Unable to set balance");
@@ -517,7 +523,10 @@ mod integration_tests {
         // TODO add challenge period variable
         let current_timestamp =
             (chrono::Utc::now().timestamp() as u64) - (CHALLENGE_PERIOD as u64) + 1;
-        anvil_provider.anvil_set_time(current_timestamp).await.expect("Failed to set time");
+        anvil_provider
+            .anvil_set_time(current_timestamp)
+            .await
+            .expect("Failed to set time");
 
         // ------------------------------------------------------------------------------------------------------------
         let cancel_token: CancellationToken = CancellationToken::new();
@@ -528,8 +537,9 @@ mod integration_tests {
             anvil_provider
                 .anvil_set_balance(
                     signer.default_signer().address().clone(),
-                    U256::from_str_radix("1000000000000000000000000000000000000000", 10).unwrap()
-                ).await
+                    U256::from_str_radix("1000000000000000000000000000000000000000", 10).unwrap(),
+                )
+                .await
                 .expect("Unable to set balance");
             let addresses = scribe_addresses.clone();
             let cancel_token = cancel_token.clone();
@@ -545,7 +555,8 @@ mod integration_tests {
 
         // Increase current block count to move away from poller intialisation block
         anvil_provider
-            .anvil_mine(Some(U256::from(1)), Some(U256::from(1))).await
+            .anvil_mine(Some(U256::from(1)), Some(U256::from(1)))
+            .await
             .expect("Failed to mine");
 
         // ------------------------------------------------------------------------------------------------------------
@@ -553,10 +564,15 @@ mod integration_tests {
         for i in 0..NUM_SCRIBE_INSTANCES {
             // Assert that the current contract balance is not 0
             let balance = anvil_provider
-                .get_balance(scribe_addresses[i]).await
+                .get_balance(scribe_addresses[i])
+                .await
                 .expect("Failed to get balance");
             assert_ne!(balance, U256::from(0));
-            invalid_pokes.push(make_invalid_op_poke(current_timestamp, private_key, &scribes[i]));
+            invalid_pokes.push(make_invalid_op_poke(
+                current_timestamp,
+                private_key,
+                &scribes[i],
+            ));
             // Do at most 50 at the same time
             if i % 50 == 0 {
                 join_all(invalid_pokes).await;
@@ -567,20 +583,20 @@ mod integration_tests {
 
         // Mine at least one block to ensure log is processed
         anvil_provider
-            .anvil_mine(Some(U256::from(1)), Some(U256::from(1))).await
+            .anvil_mine(Some(U256::from(1)), Some(U256::from(1)))
+            .await
             .expect("Failed to mine");
 
-        let result = join_all(
-            (0..NUM_SCRIBE_INSTANCES).map(|i|
-                poll_balance_is_zero(
-                    &anvil_provider,
-                    &scribe_addresses[i],
-                    (20 + (10 * NUM_SCRIBE_INSTANCES) / 100).try_into().unwrap()
-                )
+        let result = join_all((0..NUM_SCRIBE_INSTANCES).map(|i| {
+            poll_balance_is_zero(
+                &anvil_provider,
+                &scribe_addresses[i],
+                (20 + (10 * NUM_SCRIBE_INSTANCES) / 100).try_into().unwrap(),
             )
-        ).await
-            .iter()
-            .all(|&result| result);
+        }))
+        .await
+        .iter()
+        .all(|&result| result);
 
         // Poll to check that the challenge started log is found,
         // (to ensure log hasn't been changed as its non appearance is looked for in other tests)
@@ -589,7 +605,10 @@ mod integration_tests {
             testing_logger::validate(|captured_logs| {
                 let mut found: bool = false;
                 for log in captured_logs {
-                    found |= log.body.to_lowercase().contains(&"Challenge started".to_lowercase());
+                    found |= log
+                        .body
+                        .to_lowercase()
+                        .contains(&"Challenge started".to_lowercase());
                 }
                 success.set(found);
             });
@@ -620,21 +639,28 @@ mod integration_tests {
         let (anvil, anvil_provider, signer) = create_anvil_instances(private_key, 8546).await;
 
         // Set to a low current time for now, this avoids having stale poke error later
-        anvil_provider.anvil_set_time(1000).await.expect("Failed to set time");
+        anvil_provider
+            .anvil_set_time(1000)
+            .await
+            .expect("Failed to set time");
 
         // Deploy scribe instance
         let scribe_optimistic = deploy_scribe(anvil_provider.clone(), signer.clone(), 300).await;
         anvil_provider
             .anvil_set_balance(
                 scribe_optimistic.address().clone(),
-                U256::from_str_radix("1000000000000000000000000000000000000000", 10).unwrap()
-            ).await
+                U256::from_str_radix("1000000000000000000000000000000000000000", 10).unwrap(),
+            )
+            .await
             .expect("Unable to set balance");
 
         // Update current anvil time to be far from last scribe config update
         // Set the anvil time to be in the past to ensure the challenge period is exceeded later
         let current_timestamp = (chrono::Utc::now().timestamp() as u64) - 400;
-        anvil_provider.anvil_set_time(current_timestamp).await.expect("Failed to set time");
+        anvil_provider
+            .anvil_set_time(current_timestamp)
+            .await
+            .expect("Failed to set time");
 
         // ------------------------------------------------------------------------------------------------------------
         let cancel_token: CancellationToken = CancellationToken::new();
@@ -645,8 +671,9 @@ mod integration_tests {
             anvil_provider
                 .anvil_set_balance(
                     signer.default_signer().address().clone(),
-                    U256::from_str_radix("1000000000000000000000000000000000000000", 10).unwrap()
-                ).await
+                    U256::from_str_radix("1000000000000000000000000000000000000000", 10).unwrap(),
+                )
+                .await
                 .expect("Unable to set balance");
             let addresses = vec![scribe_optimistic.address().clone()];
             let cancel_token = cancel_token.clone();
@@ -661,13 +688,15 @@ mod integration_tests {
 
         // Increase current block count to move away from poller intialisation block
         anvil_provider
-            .anvil_mine(Some(U256::from(1)), Some(U256::from(1))).await
+            .anvil_mine(Some(U256::from(1)), Some(U256::from(1)))
+            .await
             .expect("Failed to mine");
 
         // ------------------------------------------------------------------------------------------------------------
         // Assert that the current contract balance is not 0
         let balance = anvil_provider
-            .get_balance(scribe_optimistic.address().clone()).await
+            .get_balance(scribe_optimistic.address().clone())
+            .await
             .expect("Failed to get balance");
         assert_ne!(balance, U256::from(0));
 
@@ -677,7 +706,8 @@ mod integration_tests {
 
         // Mine at least one block to ensure log is processed
         anvil_provider
-            .anvil_mine(Some(U256::from(1)), Some(U256::from(1))).await
+            .anvil_mine(Some(U256::from(1)), Some(U256::from(1)))
+            .await
             .expect("Failed to mine");
 
         // Poll till expected logs are found
@@ -689,10 +719,13 @@ mod integration_tests {
                 let mut found: bool = false;
                 for log in captured_logs {
                     assert!(
-                        !log.body.to_lowercase().contains(&"Challenge started".to_lowercase()),
+                        !log.body
+                            .to_lowercase()
+                            .contains(&"Challenge started".to_lowercase()),
                         "Challenge started log found"
                     );
-                    found |= log.body
+                    found |= log
+                        .body
                         .to_lowercase()
                         .contains(&"OpPoked received outside of challenge period".to_lowercase());
                 }
@@ -714,7 +747,7 @@ mod integration_tests {
 
     async fn create_anvil_instances(
         private_key: &str,
-        port: u16
+        port: u16,
     ) -> (AnvilInstance, AnvilProvider, EthereumWallet) {
         let anvil: AnvilInstance = Anvil::new()
             .port(port)
@@ -723,9 +756,8 @@ mod integration_tests {
             .try_spawn()
             .expect("Failed to spawn anvil");
 
-        let signer: EthereumWallet = EthereumWallet::new(
-            private_key.parse::<PrivateKeySigner>().unwrap()
-        );
+        let signer: EthereumWallet =
+            EthereumWallet::new(private_key.parse::<PrivateKeySigner>().unwrap());
 
         let anvil_provider = Arc::new(
             ProviderBuilder::new()
@@ -734,24 +766,30 @@ mod integration_tests {
                 .wallet(signer.clone())
                 .filler(ChainIdFiller::new(Some(31337)))
                 .filler(NonceFiller::<CachedNonceManager>::default())
-                .on_http(anvil.endpoint_url())
+                .on_http(anvil.endpoint_url()),
         );
 
         // set initial balance for deployer
         anvil_provider
             .anvil_set_balance(
                 signer.default_signer().address(),
-                U256::from_str_radix("1000000000000000000000000000000000000000", 10).unwrap()
-            ).await
+                U256::from_str_radix("1000000000000000000000000000000000000000", 10).unwrap(),
+            )
+            .await
             .expect("Unable to set balance");
 
         // configure anvil settings
-        anvil_provider.anvil_set_auto_mine(true).await.expect("Failed to set auto mine");
         anvil_provider
-            .anvil_mine(Some(U256::from(3)), Some(U256::from(3))).await
+            .anvil_set_auto_mine(true)
+            .await
+            .expect("Failed to set auto mine");
+        anvil_provider
+            .anvil_mine(Some(U256::from(3)), Some(U256::from(3)))
+            .await
             .expect("Failed to mine");
         anvil_provider
-            .anvil_impersonate_account(signer.default_signer().address().clone()).await
+            .anvil_impersonate_account(signer.default_signer().address().clone())
+            .await
             .expect("Failed to impersonate account");
 
         return (anvil, anvil_provider, signer);
@@ -760,7 +798,7 @@ mod integration_tests {
     async fn deploy_scribe<P: Provider<T, N>, T: Clone + Transport, N: Network>(
         provider: P,
         signer: EthereumWallet,
-        challenge_period: u16
+        challenge_period: u16,
     ) -> ScribeOptimisiticInstance<T, P, N> {
         // deploy scribe instance
         let initial_authed = signer.default_signer().address();
@@ -771,18 +809,16 @@ mod integration_tests {
             0123456789abcdef0123456789abcdef
         "
         );
-        let scribe_optimistic = ScribeOptimisitic::deploy(
-            provider,
-            initial_authed.clone(),
-            FixedBytes(wat).clone()
-        );
+        let scribe_optimistic =
+            ScribeOptimisitic::deploy(provider, initial_authed.clone(), FixedBytes(wat).clone());
 
         let scribe_optimistic = scribe_optimistic.await.unwrap();
         let receipt = scribe_optimistic.setBar(1);
         let receipt = receipt.send().await.expect("Failed to set bar");
         receipt
             .with_timeout(Some(Duration::from_secs(15)))
-            .watch().await
+            .watch()
+            .await
             .expect("Failed to set bar");
 
         // TODO generate the public key and v r s from private key
@@ -790,23 +826,30 @@ mod integration_tests {
         let pub_key = LibSecp256k1::Point {
             x: U256::from_str_radix(
                 "95726579611468854699048782904089382286224374897874075137780214269565012360365",
-                10
-            ).unwrap(),
+                10,
+            )
+            .unwrap(),
             y: U256::from_str_radix(
                 "95517337328947037046967076057450300670379811052080651187456799621439597083272",
-                10
-            ).unwrap(),
+                10,
+            )
+            .unwrap(),
         };
         let ecdsa_data = IScribe::ECDSAData {
             v: 0x1b,
-            r: FixedBytes(hex!("0ced9fd231ad454eaac301d6e15a56b6aaa839a55d664757e3ace927e95948ec")),
-            s: FixedBytes(hex!("21b2813ad85945f320d7728fbfc9b83cbbb564135e67c16db16d5f4e74392119")),
+            r: FixedBytes(hex!(
+                "0ced9fd231ad454eaac301d6e15a56b6aaa839a55d664757e3ace927e95948ec"
+            )),
+            s: FixedBytes(hex!(
+                "21b2813ad85945f320d7728fbfc9b83cbbb564135e67c16db16d5f4e74392119"
+            )),
         };
         let receipt = scribe_optimistic.lift_0(pub_key, ecdsa_data);
         let receipt = receipt.send().await.expect("Failed to lift validator");
         receipt
             .with_timeout(Some(Duration::from_secs(15)))
-            .watch().await
+            .watch()
+            .await
             .expect("Failed to lift validator");
 
         // set challenge period
@@ -814,7 +857,8 @@ mod integration_tests {
         let receipt = receipt.send().await.expect("Failed to lift validator");
         receipt
             .with_timeout(Some(Duration::from_secs(15)))
-            .watch().await
+            .watch()
+            .await
             .expect("Failed to set opChallenge");
 
         return scribe_optimistic;
@@ -824,20 +868,21 @@ mod integration_tests {
         url: Url,
         signer: EthereumWallet,
         cancel_token: CancellationToken,
-        addresses: Vec<Address>
+        addresses: Vec<Address>,
     ) {
-        let client = ClientBuilder::default().layer(RetryBackoffLayer::new(15, 200, 300)).http(url);
+        let client = ClientBuilder::default()
+            .layer(RetryBackoffLayer::new(15, 200, 300))
+            .http(url);
 
         let nonce_mananger = NonceFiller::<CachedNonceManager>::default();
 
         let provider = Arc::new(
             ProviderBuilder::new()
                 .with_recommended_fillers()
-
                 .filler(ChainIdFiller::new(Some(31337)))
                 .filler(nonce_mananger.clone())
                 .wallet(signer.clone())
-                .on_client(client)
+                .on_client(client),
         );
 
         let flashbot_provider = provider.clone();
@@ -853,7 +898,7 @@ mod integration_tests {
             cancel_token.clone(),
             provider.clone(),
             tx.clone(),
-            1
+            1,
         );
 
         // Create event distributor
@@ -862,7 +907,7 @@ mod integration_tests {
             cancel_token.clone(),
             provider.clone(),
             flashbot_provider.clone(),
-            rx
+            rx,
         );
 
         // Run events listener process
@@ -892,18 +937,20 @@ mod integration_tests {
     async fn poll_balance_is_zero(
         anvil_provider: &AnvilProvider,
         address: &Address,
-        timeout: u64
+        timeout: u64,
     ) -> bool {
         let start_time = chrono::Utc::now().timestamp() as u64;
         while (chrono::Utc::now().timestamp() as u64) < start_time + timeout {
             let balance = anvil_provider
-                .get_balance(address.clone()).await
+                .get_balance(address.clone())
+                .await
                 .expect("Failed to get balance");
             if balance == U256::from(0) {
                 return true;
             }
             anvil_provider
-                .anvil_mine(Some(U256::from(1)), Some(U256::from(1))).await
+                .anvil_mine(Some(U256::from(1)), Some(U256::from(1)))
+                .await
                 .expect("Failed to mine");
             tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
         }
@@ -913,22 +960,23 @@ mod integration_tests {
     async fn make_invalid_op_poke(
         age: u64,
         private_key: &str,
-        scribe_optimisitic: &ScribeOptimisiticInstance<Http<Client>, AnvilProvider, Ethereum>
+        scribe_optimisitic: &ScribeOptimisiticInstance<Http<Client>, AnvilProvider, Ethereum>,
     ) {
         let poke_data: IScribe::PokeData = IScribe::PokeData {
             val: 10,
             age: age as u32,
         };
         let schnorr_data = IScribe::SchnorrData {
-            signature: FixedBytes(
-                hex!("0000000000000000000000000000000000000000000000000000000000000000")
-            ),
+            signature: FixedBytes(hex!(
+                "0000000000000000000000000000000000000000000000000000000000000000"
+            )),
             commitment: alloy::primitives::Address::ZERO.clone(),
             feedIds: hex!("00").into(),
         };
         let op_poke_message = scribe_optimisitic
             .constructOpPokeMessage(poke_data.clone(), schnorr_data.clone())
-            .call().await
+            .call()
+            .await
             .expect("Failed to read current age");
         let op_poke_message = op_poke_message._0;
         let ecdsa_signer = private_key
@@ -944,11 +992,8 @@ mod integration_tests {
         };
 
         // Make the invalid poke
-        let receipt = scribe_optimisitic.opPoke(
-            poke_data.clone(),
-            schnorr_data.clone(),
-            ecdsa_data
-        );
+        let receipt =
+            scribe_optimisitic.opPoke(poke_data.clone(), schnorr_data.clone(), ecdsa_data);
         let receipt = receipt.send().await.expect("Failed to send op poke");
         receipt.watch().await.expect("Failed to watch op poke");
     }
