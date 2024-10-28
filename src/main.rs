@@ -14,16 +14,14 @@
 //  along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use alloy::primitives::Address;
-use alloy::providers::fillers::{CachedNonceManager, ChainIdFiller, NonceFiller};
-use alloy::providers::{ Provider, ProviderBuilder };
+use alloy::providers::fillers::{ CachedNonceManager, ChainIdFiller, NonceFiller };
+use alloy::providers::ProviderBuilder;
 use alloy::rpc::client::ClientBuilder;
 use alloy::transports::layers::RetryBackoffLayer;
 use clap::Parser;
 use env_logger::Env;
 
 use eyre::Result;
-use futures_util::lock::Mutex;
-use futures_util::TryFutureExt;
 use log::{ error, info };
 use scribe::contract::EventWithMetadata;
 use scribe::events_listener::Poller;
@@ -128,7 +126,6 @@ async fn main() -> Result<()> {
     info!("Using {:?} for signing transactions.", signer.default_signer().address());
     let nonce_mananger = NonceFiller::<CachedNonceManager>::default();
 
-
     // Create new HTTP client with retry backoff layer
     let client = ClientBuilder::default()
         .layer(RetryBackoffLayer::new(15, 200, 300))
@@ -180,10 +177,7 @@ async fn main() -> Result<()> {
     // Register Prometheus metrics
     let builder = PrometheusBuilder::new();
 
-    let port = env::var("HTTP_PORT")
-        .unwrap_or(String::from("9090"))
-        .parse::<u16>()
-        .unwrap();
+    let port = env::var("HTTP_PORT").unwrap_or(String::from("9090")).parse::<u16>().unwrap();
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
 
     let _ = builder.with_http_listener(addr).install();
@@ -477,8 +471,9 @@ mod integration_tests {
 
     #[tokio::test]
     async fn challenge_contract() {
-        // Test an invalid poke on multiple scribe instances is successfully challenged
+        // Test an invalid poke on multiple scribe instances in parrallel are successfully challenged
         const NUM_SCRIBE_INSTANCES: usize = 100;
+        const CHALLENGE_PERIOD: u16 = 1000;
 
         // ------------------------------------------------------------------------------------------------------------
         let private_key = PRIVATE_KEY;
@@ -487,14 +482,14 @@ mod integration_tests {
         // set to a low current time for now, this avoids having stale poke error later
         anvil_provider.anvil_set_time(1000).await.expect("Failed to set time");
 
-
-
         let mut deployments = vec![];
         let mut scribes = vec![];
         for i in 0..NUM_SCRIBE_INSTANCES {
-            deployments.push(deploy_scribe(anvil_provider.clone(), signer.clone()));
-            // Only deploy at most 30 in parralell
-            if i%30 == 0{
+            deployments.push(
+                deploy_scribe(anvil_provider.clone(), signer.clone(), CHALLENGE_PERIOD)
+            );
+            // Only deploy at most 20 in parrallel
+            if i % 20 == 0 {
                 scribes.append(&mut join_all(deployments).await);
                 deployments = vec![];
             }
@@ -518,7 +513,10 @@ mod integration_tests {
         }
 
         // Update current anvil time to be far from last scribe config update
-        let current_timestamp = (chrono::Utc::now().timestamp() as u64) - 100;
+        // The more scribe instances the firther back in time a the anvil block timestamp doesn't stay in sync with chrono
+        // TODO add challenge period variable
+        let current_timestamp =
+            (chrono::Utc::now().timestamp() as u64) - (CHALLENGE_PERIOD as u64) + 1;
         anvil_provider.anvil_set_time(current_timestamp).await.expect("Failed to set time");
 
         // ------------------------------------------------------------------------------------------------------------
@@ -559,6 +557,11 @@ mod integration_tests {
                 .expect("Failed to get balance");
             assert_ne!(balance, U256::from(0));
             invalid_pokes.push(make_invalid_op_poke(current_timestamp, private_key, &scribes[i]));
+            // Do at most 50 at the same time
+            if i % 50 == 0 {
+                join_all(invalid_pokes).await;
+                invalid_pokes = vec![];
+            }
         }
         join_all(invalid_pokes).await;
 
@@ -568,11 +571,16 @@ mod integration_tests {
             .expect("Failed to mine");
 
         let result = join_all(
-            (0..NUM_SCRIBE_INSTANCES)
-                .map(|i| poll_balance_is_zero(&anvil_provider, &scribe_addresses[i], 10))
+            (0..NUM_SCRIBE_INSTANCES).map(|i|
+                poll_balance_is_zero(
+                    &anvil_provider,
+                    &scribe_addresses[i],
+                    (20 + (10 * NUM_SCRIBE_INSTANCES) / 100).try_into().unwrap()
+                )
             )
-            .await.iter().all(|&result| result);
-
+        ).await
+            .iter()
+            .all(|&result| result);
 
         // Poll to check that the challenge started log is found,
         // (to ensure log hasn't been changed as its non appearance is looked for in other tests)
@@ -615,7 +623,7 @@ mod integration_tests {
         anvil_provider.anvil_set_time(1000).await.expect("Failed to set time");
 
         // Deploy scribe instance
-        let scribe_optimistic = deploy_scribe(anvil_provider.clone(), signer.clone()).await;
+        let scribe_optimistic = deploy_scribe(anvil_provider.clone(), signer.clone(), 300).await;
         anvil_provider
             .anvil_set_balance(
                 scribe_optimistic.address().clone(),
@@ -751,7 +759,8 @@ mod integration_tests {
 
     async fn deploy_scribe<P: Provider<T, N>, T: Clone + Transport, N: Network>(
         provider: P,
-        signer: EthereumWallet
+        signer: EthereumWallet,
+        challenge_period: u16
     ) -> ScribeOptimisiticInstance<T, P, N> {
         // deploy scribe instance
         let initial_authed = signer.default_signer().address();
@@ -767,10 +776,14 @@ mod integration_tests {
             initial_authed.clone(),
             FixedBytes(wat).clone()
         );
+
         let scribe_optimistic = scribe_optimistic.await.unwrap();
         let receipt = scribe_optimistic.setBar(1);
         let receipt = receipt.send().await.expect("Failed to set bar");
-        receipt.with_timeout(Some(Duration::from_secs(15))).watch().await.expect("Failed to set bar");
+        receipt
+            .with_timeout(Some(Duration::from_secs(15)))
+            .watch().await
+            .expect("Failed to set bar");
 
         // TODO generate the public key and v r s from private key
         // lift validator
@@ -791,12 +804,18 @@ mod integration_tests {
         };
         let receipt = scribe_optimistic.lift_0(pub_key, ecdsa_data);
         let receipt = receipt.send().await.expect("Failed to lift validator");
-        receipt.with_timeout(Some(Duration::from_secs(15))).watch().await.expect("Failed to lift validator");
+        receipt
+            .with_timeout(Some(Duration::from_secs(15)))
+            .watch().await
+            .expect("Failed to lift validator");
 
         // set challenge period
-        let receipt = scribe_optimistic.setOpChallengePeriod(300);
+        let receipt = scribe_optimistic.setOpChallengePeriod(challenge_period as u16);
         let receipt = receipt.send().await.expect("Failed to lift validator");
-        receipt.with_timeout(Some(Duration::from_secs(15))).watch().await.expect("Failed to set opChallenge");
+        receipt
+            .with_timeout(Some(Duration::from_secs(15)))
+            .watch().await
+            .expect("Failed to set opChallenge");
 
         return scribe_optimistic;
     }
