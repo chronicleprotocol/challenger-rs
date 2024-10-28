@@ -180,8 +180,10 @@ async fn main() -> Result<()> {
     // Register Prometheus metrics
     let builder = PrometheusBuilder::new();
 
-    let port = env::var("HTTP_PORT").unwrap_or(String::from("9090")).parse::<u16>().unwrap();
-
+    let port = env::var("HTTP_PORT")
+        .unwrap_or(String::from("9090"))
+        .parse::<u16>()
+        .unwrap();
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
 
     let _ = builder.with_http_listener(addr).install();
