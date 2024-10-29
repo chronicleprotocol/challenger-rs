@@ -708,7 +708,7 @@ mod integration_tests {
 
     // TODO: test dont challenge if receive op challenged
 
-    // TODO: test flashbotnused first, fallback to normal rpc
+    // TODO: test flashbot used first, fallback to normal rpc
 
     // -- Helper functions --
 
