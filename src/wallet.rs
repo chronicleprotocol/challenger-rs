@@ -29,6 +29,7 @@ pub trait PrivateKeyWallet {
     fn raw_private_key(&self) -> Option<String>;
 
     #[track_caller]
+    #[allow(clippy::wrong_self_convention)]
     fn from_private_key(&self, private_key: &str) -> Result<Option<EthereumWallet>> {
         debug!("Using private key from arguments");
 

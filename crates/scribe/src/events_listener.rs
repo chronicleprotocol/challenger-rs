@@ -20,7 +20,8 @@ use alloy::{
     primitives::Address,
     providers::{
         fillers::{
-            BlobGasFiller, CachedNonceManager, ChainIdFiller, FillProvider, GasFiller, JoinFill, NonceFiller, WalletFiller
+            BlobGasFiller, CachedNonceManager, ChainIdFiller, FillProvider, GasFiller, JoinFill,
+            NonceFiller, WalletFiller,
         },
         Identity, Provider, RootProvider, WalletProvider,
     },
@@ -50,7 +51,27 @@ const MAX_ADDRESS_PER_REQUEST: usize = 50;
 pub type RpcRetryProvider = RetryBackoffService<Http<Client>>;
 
 /// The provider type used to interact with the Ethereum network with a signer.
-pub type RetryProviderWithSigner = FillProvider<JoinFill<JoinFill<JoinFill<JoinFill<Identity, JoinFill<GasFiller, JoinFill<BlobGasFiller, JoinFill<NonceFiller, ChainIdFiller>>>>, ChainIdFiller>, NonceFiller<CachedNonceManager>>, WalletFiller<EthereumWallet>>, RootProvider<RetryBackoffService<Http<Client>>>, RetryBackoffService<Http<Client>>, Ethereum>;
+pub type RetryProviderWithSigner = FillProvider<
+    JoinFill<
+        JoinFill<
+            JoinFill<
+                JoinFill<
+                    Identity,
+                    JoinFill<
+                        GasFiller,
+                        JoinFill<BlobGasFiller, JoinFill<NonceFiller, ChainIdFiller>>,
+                    >,
+                >,
+                ChainIdFiller,
+            >,
+            NonceFiller<CachedNonceManager>,
+        >,
+        WalletFiller<EthereumWallet>,
+    >,
+    RootProvider<RetryBackoffService<Http<Client>>>,
+    RetryBackoffService<Http<Client>>,
+    Ethereum,
+>;
 
 #[derive(Debug, Clone)]
 pub struct Poller {
@@ -108,7 +129,7 @@ impl Poller {
         log::trace!("Polling for new events");
         // Get latest block number
         let latest_block = self.provider.get_block_number().await.unwrap();
-        if None == self.last_processes_block {
+        if self.last_processes_block.is_none() {
             self.last_processes_block = Some(latest_block);
         }
         // TODO remove this line

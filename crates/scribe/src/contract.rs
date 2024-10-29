@@ -21,9 +21,7 @@ use alloy::{
     sol,
     sol_types::SolEvent,
 };
-use once_cell::sync::Lazy;
 use eyre::{bail, Result, WrapErr};
-use tokio::sync::Mutex;
 use IScribe::SchnorrData;
 use ScribeOptimistic::{OpPoked, ScribeOptimisticInstance};
 
@@ -41,7 +39,7 @@ sol! {
 // Decode a log into a specific event
 // Example:
 // ```rust
-// let event = decode_log::<ScribeOptimistic::OpPoked>(&log)?;
+// let event: ScribeOptimistic::OpPoked = decode_log::<ScribeOptimistic::OpPoked>(&log)?;
 // ```
 fn decode_log<E: SolEvent>(log: &Log) -> Result<E> {
     let log_data: &LogData = log.as_ref();
@@ -50,19 +48,23 @@ fn decode_log<E: SolEvent>(log: &Log) -> Result<E> {
         .wrap_err_with(|| "Failed to decode log")
 }
 
-#[derive(Debug)]
+/// Events emitted by the ScribeOptimistic contract.
+/// This enum is used to decode logs into specific events.
+/// In `challenger` we only care about `OpPoked` and `OpPokeChallengedSuccessfully` events.
+#[derive(Debug, Clone)]
 pub enum Event {
     OpPoked(ScribeOptimistic::OpPoked),
     OpPokeChallengedSuccessfully(ScribeOptimistic::OpPokeChallengedSuccessfully),
 }
 
 impl Event {
-    /// Creates a new GeneralPokedEvent from a Log
+    /// Creates a new [Event] from a Log
     pub fn from_log(log: Log) -> Result<Self> {
         let Some(topic) = log.topic0() else {
             bail!("No topic found in log for tx {:?}", log.transaction_hash)
         };
 
+        // Match the event by `topic0
         match *topic {
             ScribeOptimistic::OpPoked::SIGNATURE_HASH => {
                 let event = decode_log::<ScribeOptimistic::OpPoked>(&log)?;
@@ -72,12 +74,15 @@ impl Event {
                 let event = decode_log::<ScribeOptimistic::OpPokeChallengedSuccessfully>(&log)?;
                 Ok(Self::OpPokeChallengedSuccessfully(event))
             }
-            _ => bail!("Unknown event {:#x}", topic),
+            _ => bail!("Unknown event with topic0: {:#x}", topic),
         }
     }
 }
 
-#[derive(Debug)]
+/// Event with initial onchain data.
+/// This struct is used to store the [Event], [alloy::rpc::types::Log] that emitted it
+/// and contract [alloy::primitives::Address] that emitted `log`.
+#[derive(Debug, Clone)]
 pub struct EventWithMetadata {
     pub event: Event,
     pub log: Log,
@@ -85,7 +90,7 @@ pub struct EventWithMetadata {
 }
 
 impl EventWithMetadata {
-    /// Creates a new EventWithMetadata from a Log
+    /// Creates a new [EventWithMetadata] from a Log
     pub fn from_log(log: Log) -> Result<Self> {
         let event: Event = Event::from_log(log.clone())?;
         let address = log.address();
@@ -98,15 +103,19 @@ impl EventWithMetadata {
     }
 }
 
+/// This trait provides methods required for `challenger` to interact with the ScribeOptimistic smart contract.
+///
 #[allow(async_fn_in_trait)]
 pub trait ScribeOptimisticProvider {
     /// Returns challenge period from ScribeOptimistic smart contract deployed to `address`.
+    /// NOTE: From time to time challenger might need to refresh this value, because it might be changed by the contract owner.
     async fn get_challenge_period(&self) -> Result<u16>;
 
     /// Returns true if given `OpPoked` schnorr signature is valid.
     async fn is_schnorr_signature_valid(&self, op_poked: OpPoked) -> Result<bool>;
 
-    /// Challenges given `OpPoked` event.
+    /// Challenges given `OpPoked` event with given `schnorr_data`.
+    /// See: `IScribeOptimistic::opChallenge(SchnorrData calldata schnorrData)` for more details.
     async fn challenge(&self, schnorr_data: SchnorrData) -> Result<FixedBytes<32>>;
 
     /// Returns the address of the contract.
@@ -116,6 +125,7 @@ pub trait ScribeOptimisticProvider {
     fn get_new_provider(&self) -> Arc<RetryProviderWithSigner>;
 }
 
+/// ScribeOptimisticProviderInstance is a real implementation of ScribeOptimisticProvider based on raw JSON-RPC calls.
 #[derive(Debug, Clone)]
 pub struct ScribeOptimisticProviderInstance {
     pub contract: ScribeOptimisticInstance<RpcRetryProvider, Arc<RetryProviderWithSigner>>,
@@ -129,14 +139,16 @@ impl ScribeOptimisticProviderInstance {
     }
 }
 
-
 impl ScribeOptimisticProvider for ScribeOptimisticProviderInstance {
     async fn get_challenge_period(&self) -> Result<u16> {
         Ok(self.contract.opChallengePeriod().call().await?._0)
     }
 
     async fn is_schnorr_signature_valid(&self, op_poked: OpPoked) -> Result<bool> {
-        log::trace!("{:?} Validating OpPoke signature", self.contract.address());
+        log::trace!(
+            "Contract {:?}: Validating OpPoke signature",
+            self.contract.address()
+        );
 
         let message = self
             .contract
@@ -155,21 +167,14 @@ impl ScribeOptimisticProvider for ScribeOptimisticProviderInstance {
         Ok(acceptable)
     }
 
-
     async fn challenge(&self, schnorr_data: SchnorrData) -> Result<FixedBytes<32>> {
-        // This ensures only one challenge is happening at a time,
-        // (this way multiple signed transactions with same nonce aren't sent)
-        // static CHALLENGE_GAURD: Lazy<tokio::sync::Mutex<()>> = Lazy::new(|| tokio::sync::Mutex::new(()));
-        // let _gaurd = CHALLENGE_GAURD.lock().await;
-
-        log::debug!("{:?} Challenging OpPoke", self.contract.address());
-        let from_address = self.contract.address();
-        log::info!("Challenging from address: {:?}", from_address);
+        log::info!("Contract {:?}: Challenging OpPoke", self.contract.address(),);
         let transaction = self
             .contract
             .opChallenge(schnorr_data)
-            // TODO set gas limit properly
+            // TODO: set gas limit properly
             .gas(200000);
+
         transaction
             .send()
             .await?
