@@ -506,11 +506,10 @@ mod integration_tests {
         let mut scribe_addresses = vec![];
 
         let mut balance_updates = vec![];
-        for i in 0..NUM_SCRIBE_INSTANCES {
-            let scribe_optimistic = &scribes[i];
-            scribe_addresses.push(scribe_optimistic.address().clone());
+        for scribe_optimistic in scribes.iter().take(NUM_SCRIBE_INSTANCES) {
+            scribe_addresses.push(*scribe_optimistic.address());
             balance_updates.push(anvil_provider.anvil_set_balance(
-                scribes[i].address().clone(),
+                *scribe_optimistic.address(),
                 U256::from_str_radix("1000000000000000000000000000000000000000", 10).unwrap(),
             ));
         }
@@ -536,7 +535,7 @@ mod integration_tests {
             let signer: EthereumWallet = EthereumWallet::new(PrivateKeySigner::random());
             anvil_provider
                 .anvil_set_balance(
-                    signer.default_signer().address().clone(),
+                    signer.default_signer().address(),
                     U256::from_str_radix("1000000000000000000000000000000000000000", 10).unwrap(),
                 )
                 .await
@@ -648,7 +647,7 @@ mod integration_tests {
         let scribe_optimistic = deploy_scribe(anvil_provider.clone(), signer.clone(), 300).await;
         anvil_provider
             .anvil_set_balance(
-                scribe_optimistic.address().clone(),
+                *scribe_optimistic.address(),
                 U256::from_str_radix("1000000000000000000000000000000000000000", 10).unwrap(),
             )
             .await
@@ -670,12 +669,12 @@ mod integration_tests {
             let signer: EthereumWallet = EthereumWallet::new(PrivateKeySigner::random());
             anvil_provider
                 .anvil_set_balance(
-                    signer.default_signer().address().clone(),
+                    signer.default_signer().address(),
                     U256::from_str_radix("1000000000000000000000000000000000000000", 10).unwrap(),
                 )
                 .await
                 .expect("Unable to set balance");
-            let addresses = vec![scribe_optimistic.address().clone()];
+            let addresses = vec![*scribe_optimistic.address()];
             let cancel_token = cancel_token.clone();
             let url = anvil.endpoint_url();
             let signer = signer.clone();
@@ -695,7 +694,7 @@ mod integration_tests {
         // ------------------------------------------------------------------------------------------------------------
         // Assert that the current contract balance is not 0
         let balance = anvil_provider
-            .get_balance(scribe_optimistic.address().clone())
+            .get_balance(*scribe_optimistic.address())
             .await
             .expect("Failed to get balance");
         assert_ne!(balance, U256::from(0));
@@ -788,11 +787,11 @@ mod integration_tests {
             .await
             .expect("Failed to mine");
         anvil_provider
-            .anvil_impersonate_account(signer.default_signer().address().clone())
+            .anvil_impersonate_account(signer.default_signer().address())
             .await
             .expect("Failed to impersonate account");
 
-        return (anvil, anvil_provider, signer);
+        (anvil, anvil_provider, signer)
     }
 
     async fn deploy_scribe<P: Provider<T, N>, T: Clone + Transport, N: Network>(
@@ -810,7 +809,7 @@ mod integration_tests {
         "
         );
         let scribe_optimistic =
-            ScribeOptimisitic::deploy(provider, initial_authed.clone(), FixedBytes(wat).clone());
+            ScribeOptimisitic::deploy(provider, initial_authed, FixedBytes(wat));
 
         let scribe_optimistic = scribe_optimistic.await.unwrap();
         let receipt = scribe_optimistic.setBar(1);
@@ -853,7 +852,7 @@ mod integration_tests {
             .expect("Failed to lift validator");
 
         // set challenge period
-        let receipt = scribe_optimistic.setOpChallengePeriod(challenge_period as u16);
+        let receipt = scribe_optimistic.setOpChallengePeriod(challenge_period);
         let receipt = receipt.send().await.expect("Failed to lift validator");
         receipt
             .with_timeout(Some(Duration::from_secs(15)))
@@ -861,7 +860,7 @@ mod integration_tests {
             .await
             .expect("Failed to set opChallenge");
 
-        return scribe_optimistic;
+        scribe_optimistic
     }
 
     async fn start_event_listener(
@@ -942,7 +941,7 @@ mod integration_tests {
         let start_time = chrono::Utc::now().timestamp() as u64;
         while (chrono::Utc::now().timestamp() as u64) < start_time + timeout {
             let balance = anvil_provider
-                .get_balance(address.clone())
+                .get_balance(*address)
                 .await
                 .expect("Failed to get balance");
             if balance == U256::from(0) {
@@ -954,7 +953,7 @@ mod integration_tests {
                 .expect("Failed to mine");
             tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
         }
-        return false;
+        false
     }
 
     async fn make_invalid_op_poke(
@@ -970,7 +969,7 @@ mod integration_tests {
             signature: FixedBytes(hex!(
                 "0000000000000000000000000000000000000000000000000000000000000000"
             )),
-            commitment: alloy::primitives::Address::ZERO.clone(),
+            commitment: alloy::primitives::Address::ZERO,
             feedIds: hex!("00").into(),
         };
         let op_poke_message = scribe_optimisitic
