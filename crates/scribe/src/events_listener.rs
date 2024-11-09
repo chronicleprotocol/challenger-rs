@@ -32,7 +32,7 @@ use alloy::{
         layers::RetryBackoffService,
     },
 };
-use eyre::{Context, Result};
+use eyre::{bail, Context, Result};
 use tokio::{select, sync::mpsc::Sender};
 use tokio_util::sync::CancellationToken;
 
@@ -46,6 +46,7 @@ use crate::{
 
 // const POLL_INTERVAL_SEC: u64 = 30;
 const MAX_ADDRESS_PER_REQUEST: usize = 50;
+const MAX_RETRY_COUNT: u16 = 5;
 
 /// The provider type used to interact with the Ethereum network.
 pub type RpcRetryProvider = RetryBackoffService<Http<Client>>;
@@ -73,6 +74,11 @@ pub type RetryProviderWithSigner = FillProvider<
     Ethereum,
 >;
 
+/// Poller is responsible for polling for new events in the Ethereum network.
+/// It will poll for new events in the range `self.last_processes_block..latest_block`
+/// every `self.poll_interval_seconds` seconds.
+/// It will send the new events to the `tx` channel.
+/// For optimization reasons, it will query for events in chunks of `MAX_ADDRESS_PER_REQUEST` addresses.
 #[derive(Debug, Clone)]
 pub struct Poller {
     addresses: Vec<Address>,
@@ -81,6 +87,7 @@ pub struct Poller {
     last_processes_block: Option<u64>,
     tx: Sender<EventWithMetadata>,
     poll_interval_seconds: u64,
+    retry_count: u16,
 }
 
 impl Poller {
@@ -98,6 +105,7 @@ impl Poller {
             tx,
             last_processes_block: None,
             poll_interval_seconds,
+            retry_count: 0,
         }
     }
 
@@ -116,7 +124,7 @@ impl Poller {
                 OpPokeChallengedSuccessfully::SIGNATURE_HASH,
             ]);
 
-        log::trace!("[{:?}] Getting for new events", &chunk);
+        log::trace!("Poller: [{:?}] Getting for new events", &chunk);
 
         self.provider
             .get_logs(&filter)
@@ -126,16 +134,16 @@ impl Poller {
 
     // Poll for new events in block range `self.last_processes_block..latest_block`
     async fn poll(&mut self) -> Result<()> {
-        log::trace!("Polling for new events");
+        log::trace!("Poller: start polling for new events");
         // Get latest block number
-        let latest_block = self.provider.get_block_number().await.unwrap();
+        let latest_block = self.provider.get_block_number().await?;
         if self.last_processes_block.is_none() {
             self.last_processes_block = Some(latest_block);
         }
         // TODO remove this line
         if latest_block <= self.last_processes_block.unwrap_or(0) {
             log::warn!(
-                "Latest block {:?} is not greater than last processed block {:?}",
+                "Poller: latest block {:?} is not greater than last processed block {:?}",
                 latest_block,
                 self.last_processes_block
             );
@@ -146,34 +154,37 @@ impl Poller {
             let logs = self
                 .query_logs(
                     chunk.to_vec(),
-                    self.last_processes_block.unwrap(),
+                    self.last_processes_block.unwrap(), // unwrap is safe because we checked it in the beginning
                     latest_block,
                 )
                 .await;
 
             match logs {
                 Ok(logs) => {
-                    log::debug!("[{:?}] Received {} logs", chunk, logs.len());
+                    log::debug!("Poller: [{:?}] Received {} logs", chunk, logs.len());
                     for log in logs {
                         match EventWithMetadata::from_log(log) {
                             Ok(event) => {
-                                log::debug!("[{:?}] Event received: {:?}", chunk, &event);
+                                log::debug!("Poller: [{:?}] Event received: {:?}", chunk, &event);
                                 // Send event to the channel
                                 self.tx.send(event).await?;
                             }
                             Err(e) => {
-                                log::error!("[{:?}] Failed to parse log: {:?}", chunk, e);
+                                log::error!("Poller: [{:?}] Failed to parse log: {:?}", chunk, e);
                                 continue;
                             }
                         };
                     }
                 }
                 Err(e) => {
-                    log::error!("Failed to query logs: {:?}", e);
+                    // TODO: retry?
+                    bail!("Poller: Failed to query logs: {:?}", e);
                 }
             }
         }
 
+        // Reset retry count, or might be issues
+        self.retry_count = 0;
         self.last_processes_block = Some(latest_block);
         // Updating last scanned block metric
         metrics::set_last_scanned_block(
@@ -186,17 +197,29 @@ impl Poller {
 
     /// Start the event listener
     pub async fn start(&mut self) -> Result<()> {
-        log::info!("Starting polling events from RPC...");
+        log::info!("Poller: Starting polling events from RPC...");
 
         loop {
             select! {
                 _ = self.cancelation_token.cancelled() => {
-                    log::info!("Challenger cancelled");
+                    log::info!("Poller: got cancel signal, terminating...");
                     return Ok(());
                 }
                 _ = tokio::time::sleep(Duration::from_secs(self.poll_interval_seconds)) => {
-                    log::info!("Executing tick for events listener...");
-                    self.poll().await?;
+                    log::info!("Poller: Executing tick for events listener...");
+                    if let Err(err) = self.poll().await {
+                        if self.retry_count >= MAX_RETRY_COUNT {
+                            log::error!(
+                                "Poller: Max {} reties reached, will not retry anymore: {:?}",
+                                MAX_RETRY_COUNT,
+                                err
+                            );
+                            return Err(err);
+                        }
+
+                        self.retry_count += 1;
+                        log::error!("Poller: Failed to poll for events, will retry: {:?}", err);
+                    }
                 }
             }
         }

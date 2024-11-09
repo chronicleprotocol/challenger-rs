@@ -32,7 +32,7 @@ use std::{env, panic, path::PathBuf, time::Duration};
 use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 
-use scribe::event_handler;
+use scribe::events_handler;
 
 mod wallet;
 
@@ -220,7 +220,7 @@ async fn main() -> Result<()> {
     );
 
     // Create event distributor
-    let mut event_distributor = event_handler::EventDistributor::new(
+    let mut event_distributor = events_handler::EventDistributor::new(
         addresses.clone(),
         cancel_token.clone(),
         provider.clone(),
@@ -423,7 +423,7 @@ mod integration_tests {
     use alloy::transports::Transport;
     use futures_util::future::join_all;
     use scribe::contract::EventWithMetadata;
-    use scribe::event_handler;
+    use scribe::events_handler;
     use scribe::events_listener::Poller;
     use scribe_optimistic::{
         IScribe, LibSecp256k1, ScribeOptimisitic, ScribeOptimisitic::ScribeOptimisiticInstance,
@@ -608,7 +608,7 @@ mod integration_tests {
                     found |= log
                         .body
                         .to_lowercase()
-                        .contains(&"Challenge started".to_lowercase());
+                        .contains(&"OpPoked validation started".to_lowercase());
                 }
                 success.set(found);
             });
@@ -902,7 +902,7 @@ mod integration_tests {
         );
 
         // Create event distributor
-        let mut event_distributor = event_handler::EventDistributor::new(
+        let mut event_distributor = events_handler::EventDistributor::new(
             addresses.clone(),
             cancel_token.clone(),
             provider.clone(),

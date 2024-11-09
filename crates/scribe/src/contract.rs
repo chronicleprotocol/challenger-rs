@@ -61,7 +61,10 @@ impl Event {
     /// Creates a new [Event] from a Log
     pub fn from_log(log: Log) -> Result<Self> {
         let Some(topic) = log.topic0() else {
-            bail!("No topic found in log for tx {:?}", log.transaction_hash)
+            bail!(
+                "Failed to convert log to event: empty topic0 for log under tx {:?}",
+                log.transaction_hash
+            )
         };
 
         // Match the event by `topic0
@@ -74,7 +77,10 @@ impl Event {
                 let event = decode_log::<ScribeOptimistic::OpPokeChallengedSuccessfully>(&log)?;
                 Ok(Self::OpPokeChallengedSuccessfully(event))
             }
-            _ => bail!("Unknown event with topic0: {:#x}", topic),
+            _ => bail!(
+                "Failed to convert log to event: Unknown topic0: {:#x}",
+                topic
+            ),
         }
     }
 }
@@ -140,10 +146,14 @@ impl ScribeOptimisticProviderInstance {
 }
 
 impl ScribeOptimisticProvider for ScribeOptimisticProviderInstance {
+    /// Returns challenge period from ScribeOptimistic smart contract deployed to `address`.
     async fn get_challenge_period(&self) -> Result<u16> {
         Ok(self.contract.opChallengePeriod().call().await?._0)
     }
 
+    /// Validates given `OpPoked` schnorr signature.
+    /// Uses `constructPokeMessage` and `isAcceptableSchnorrSignatureNow` methods from the contract.
+    /// Returns true if the signature is valid.
     async fn is_schnorr_signature_valid(&self, op_poked: OpPoked) -> Result<bool> {
         log::trace!(
             "Contract {:?}: Validating OpPoke signature",
@@ -154,39 +164,71 @@ impl ScribeOptimisticProvider for ScribeOptimisticProviderInstance {
             .contract
             .constructPokeMessage(op_poked.pokeData)
             .call()
-            .await?
+            .await
+            .wrap_err_with(|| {
+                format!(
+                    "Contract {:?}: failed to construct poke message",
+                    self.contract.address()
+                )
+            })?
             ._0;
 
         let acceptable = self
             .contract
             .isAcceptableSchnorrSignatureNow(message, op_poked.schnorrData)
             .call()
-            .await?
+            .await
+            .wrap_err_with(|| {
+                format!(
+                    "Contract {:?}: failed to call isAcceptableSchnorrSignatureNow() method",
+                    self.contract.address()
+                )
+            })?
             ._0;
 
         Ok(acceptable)
     }
 
+    /// Challenges given `OpPoked` event with given `schnorr_data`.
+    /// Executes `opChallenge` method on the contract and returns transaction hash if everything worked well.
     async fn challenge(&self, schnorr_data: SchnorrData) -> Result<FixedBytes<32>> {
-        log::info!("Contract {:?}: Challenging OpPoke", self.contract.address(),);
+        log::warn!(
+            "Contract {:?}: Challenging OpPoke with shnorr_data {:?}",
+            self.contract.address(),
+            &schnorr_data
+        );
+
         let transaction = self
             .contract
-            .opChallenge(schnorr_data)
+            .opChallenge(schnorr_data.clone())
             // TODO: set gas limit properly
             .gas(200000);
 
         transaction
             .send()
-            .await?
+            .await
+            .wrap_err_with(|| {
+                format!(
+                    "Contract {:?} Failed to send transaction",
+                    self.contract.address()
+                )
+            })?
             .watch()
             .await
-            .wrap_err("Failed to challenge")
+            .wrap_err_with(|| {
+                format!(
+                    "Contract {:?} Failed to wait for challenge confirmation",
+                    self.contract.address()
+                )
+            })
     }
 
+    /// Returns the address of the contract.
     fn address(&self) -> &Address {
         self.contract.address()
     }
 
+    /// Returns a new provider (clone) with the same signer.
     fn get_new_provider(&self) -> Arc<RetryProviderWithSigner> {
         self.contract.provider().clone()
     }

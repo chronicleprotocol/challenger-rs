@@ -27,20 +27,20 @@ pub fn set_last_scanned_block(from: Address, block: i64) {
 }
 
 /// `inc_errors_counter` increments the errors counter for given `address`, `from` account
-pub fn inc_errors_counter(address: Address, from: Address, error: &str) {
+pub fn inc_errors_counter(address: Address, error: &str) {
+    // TODO: Use it...
     let labels = [
         ("address", format!("{:?}", address)),
-        ("from", format!("{:?}", from)),
         ("error", String::from(error)),
     ];
     counter!(ERRORS_COUNTER, &labels).increment(1);
 }
 
-/// `inc_challenge_counter` increments the challenges counter for given `address`, `from` account and `tx` hash.
-pub fn inc_challenge_counter(address: Address, from: Address, tx: B256) {
+/// `inc_challenge_counter` increments the challenges counter for given `address` and `tx` hash.
+pub fn inc_challenge_counter(address: Address, tx: B256, flashbots: bool) {
     let labels = [
         ("address", format!("{:?}", address)),
-        ("from", format!("{:?}", from)),
+        ("flashbots", format!("{:?}", flashbots)),
         ("tx", format!("{:?}", tx)),
     ];
     counter!(CHALLENGE_COUNTER, &labels).increment(1);

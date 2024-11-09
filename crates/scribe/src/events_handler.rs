@@ -20,7 +20,7 @@ use std::time::Duration;
 use alloy::primitives::Address;
 use alloy::providers::Provider;
 use alloy::rpc::types::BlockTransactionsKind;
-use eyre::{bail, Result};
+use eyre::{bail, Context, Result};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::Mutex;
 use tokio::task::JoinSet;
@@ -32,13 +32,18 @@ use crate::contract::{
     EventWithMetadata, ScribeOptimisticProvider, ScribeOptimisticProviderInstance,
 };
 use crate::events_listener::RetryProviderWithSigner;
+use crate::metrics;
 
 const CHALLENGE_POKE_DELAY_MS: u64 = 200;
 const FLASHBOT_CHALLENGE_RETRY_COUNT: u64 = 3;
 const CLASSIC_CHALLENGE_RETRY_COUNT: u64 = 3;
 
-// Takes event logs and distributes them to the appropriate contract handler
-// Each `ScribeOptimistic` instance deployed to address has its own `EventHandler` process.
+/// You can think about `EventDistributor` as a router for events.
+/// It listens for contract events from logs and distributes them to the appropriate `ScribeEventsProcessor` instance via channels.
+/// Each `ScribeOptimistic` instance deployed to address should have its own `ScribeEventsProcessor` processor.
+///
+/// `EventDistributor` is responsible for creating and managing `ScribeEventsProcessor` instances.
+/// You don't need to spawn anything manually, just call `start` and it will take care of the rest.
 pub struct EventDistributor {
     addresses: Vec<Address>,
     cancel: CancellationToken,
@@ -66,6 +71,8 @@ impl EventDistributor {
         }
     }
 
+    /// Spawns list of `ScribeEventsProcessor` instances for each address in `addresses`,
+    /// creates a channel for each address and starts listening for events.
     pub async fn start(&mut self) -> Result<()> {
         let mut contract_handler_set = JoinSet::new();
         // Create a contract handler for each scribe address
@@ -84,13 +91,16 @@ impl EventDistributor {
                 let _ = contract_handler.start().await;
             });
         }
+        log::debug!("EventDistributor: All processors started, listening for events...");
 
         loop {
             tokio::select! {
                 _ = self.cancel.cancelled() => {
+                    log::info!("EventDistributor: received cancel command, stopping...");
                     break;
                 }
                 event = self.rx.recv() => {
+                    log::trace!("EventDistributor: Received event: {:?}", event);
                     if let Some(event) = event {
                         // Send the event to the appropriate contract handler
                         match self.txs.get(&event.address) {
@@ -99,7 +109,10 @@ impl EventDistributor {
                             }
                             _ => {
                                 // Should never happen
-                                log::warn!("Received event for unknown address: {:?}", event.address);
+                                log::warn!(
+                                    "EventDistributor: Received event from unknown address or receiver is dead: {:?}",
+                                    event
+                                );
                             }
                         }
                     }
@@ -114,6 +127,11 @@ impl EventDistributor {
 
 // Receives preparsed [crate::contract::EventWithMetadata] events for a `ScribeOptimistic` instance on address,
 // validates `OpPoked` events and challenges them if they are invalid and within the challenge period.
+//
+// `OpPoked` validation and challenge logic is launched in a separate task and is cancellable.
+// When new `OpPoked` event is received, it's challenge process is started with a delay of `CHALLENGE_POKE_DELAY_MS`.
+// If next received event will be `OpPokeChallengedSuccessfully`, the challenge process is cancelled (no need to spend resources on validation).
+// Otherwise, the challenge process will start procecssing.
 struct ScribeEventsProcessor {
     address: Address,
     provider: Arc<RetryProviderWithSigner>,
@@ -143,23 +161,27 @@ impl ScribeEventsProcessor {
         }
     }
 
-    pub async fn start(&mut self) -> Result<()> {
-        // We have to fail if no challenge period is fetched
-        self.fetch_challenge_period().await.unwrap();
+    async fn start(&mut self) -> Result<()> {
+        log::debug!(
+            "ScribeEventsProcessor[{:?}] Starting new contract handler",
+            self.address
+        );
+        // We have to fail if no challenge period is fetched on start
+        self.refresh_challenge_period().await.unwrap();
 
         loop {
             tokio::select! {
                 // main process terminates, need to finish work and exit...
                 _ = self.cancellation_token.cancelled() => {
                     log::info!(
-                        "[{:?}] Cancellation requested, stopping contract handler",
+                        "ScribeEventsProcessor[{:?}] Cancellation requested, stopping contract handler",
                         self.address
                     );
                     return Ok(());
                 }
                 // new [EventWithMetadata] received, process it...
                 event = self.rx.recv() => {
-                    log::debug!("[{:?}] Received event: {:?}", self.address, event);
+                    log::trace!("ScribeEventsProcessor[{:?}] Received event: {:?}", self.address, event);
 
                     if let Some(event) = event {
                         match &event.event {
@@ -167,11 +189,14 @@ impl ScribeEventsProcessor {
                             // if not - check if event is within the challenge period, send challenge.
                             // If `schnorr_signature` is valid, do nothing.
                             Event::OpPoked(op_poked) => {
-                                log::debug!("[{:?}] OpPoked received", self.address);
+                                log::trace!(
+                                    "ScribeEventsProcessor[{:?}] OpPoked received, start processing",
+                                    self.address
+                                );
 
                                 if let Err(err) = self.process_op_poked(event.clone(), op_poked.clone()).await {
                                     log::error!(
-                                        "[{:?}] Error processing OpPoked event: {:?}",
+                                        "ScribeEventsProcessor[{:?}] Error processing OpPoked event: {:?}",
                                         self.address,
                                         err
                                     );
@@ -179,15 +204,25 @@ impl ScribeEventsProcessor {
                             }
                             // If the challenge is already successful, cancel the previous challenge process
                             Event::OpPokeChallengedSuccessfully(_) => {
+                                log::debug!(
+                                    "ScribeEventsProcessor[{:?}] OpPokeChallengedSuccessfully received, cancelling challenge process",
+                                    self.address
+                                );
                                 self.cancel_challenge().await;
                             }
                         }
+                    } else {
+                        log::warn!(
+                            "ScribeEventsProcessor[{:?}] Received None event in contract handler",
+                            self.address
+                        );
                     }
                 }
             }
         }
     }
 
+    // Starts the validation and challenge process for the `OpPoked` event.
     async fn process_op_poked(
         &mut self,
         event: EventWithMetadata,
@@ -196,12 +231,15 @@ impl ScribeEventsProcessor {
         // Check if the poke is within the challenge period
         let event_timestamp = match event.log.block_timestamp {
             Some(timestamp) => timestamp,
-            None => self.get_timestamp_from_block(&event).await?,
+            None => self
+                .get_timestamp_from_block(&event)
+                .await
+                .wrap_err_with(|| format!("Failed to get timestamp from block via RPC call"))?,
         };
 
         let current_timestamp = chrono::Utc::now().timestamp() as u64;
         log::debug!(
-            "[{:?}] OpPoked, event_timestamp: {:?}, current_timestamp: {:?}",
+            "ScribeEventsProcessor[{:?}] OpPoked, event_timestamp: {:?}, current_timestamp: {:?}",
             self.address,
             event_timestamp,
             current_timestamp
@@ -209,12 +247,16 @@ impl ScribeEventsProcessor {
         if current_timestamp - event_timestamp > self.challenge_period.unwrap() {
             // This log is expected in tests, tests must be updated if log message is changed
             log::debug!(
-                "[{:?}] OpPoked received outside of challenge period",
+                "ScribeEventsProcessor[{:?}] OpPoked received outside of challenge period",
                 self.address
             );
             return Ok(());
         }
-        log::debug!("Spawning challenge...");
+
+        log::debug!(
+            "ScribeEventsProcessor[{:?}] Spawning validation and challenge process...",
+            self.address
+        );
         self.spawn_challenge(op_poked).await;
 
         Ok(())
@@ -224,11 +266,7 @@ impl ScribeEventsProcessor {
     async fn get_timestamp_from_block(&self, event: &EventWithMetadata) -> Result<u64> {
         // Possible block number to be missing for unconfirmed blocks
         if event.log.block_number.is_none() {
-            bail!(
-                "[{:?}] Block number is missing for log {:?}",
-                self.address,
-                event.log
-            );
+            bail!("Block number is missing for log {:?}", event.log);
         }
         let block_number = event.log.block_number.unwrap();
 
@@ -240,25 +278,18 @@ impl ScribeEventsProcessor {
         let block = match block {
             Some(block) => block,
             None => {
-                bail!(
-                    "[{:?}] Block with number {:?} not found",
-                    self.address,
-                    block_number
-                );
+                bail!("Block with number {:?} not found", block_number);
             }
         };
 
         Ok(block.header.timestamp)
     }
 
-    async fn fetch_challenge_period(&mut self) -> Result<()> {
-        // TODO: Add expiration time for the challenge period
-        if self.challenge_period.is_some() {
-            return Ok(());
-        }
+    async fn refresh_challenge_period(&mut self) -> Result<()> {
         let period = ScribeOptimisticProviderInstance::new(self.address, self.provider.clone())
             .get_challenge_period()
             .await?;
+
         self.challenge_period = Some(period as u64);
         Ok(())
     }
@@ -269,7 +300,7 @@ impl ScribeEventsProcessor {
         // Create a new cancellation token
         self.cancel_challenge = Some(CancellationToken::new());
         // Create a new challenger instance
-        let challenge_handler = Some(Arc::new(Mutex::new(ChallengeSender::new(
+        let challenge_handler = Some(Arc::new(Mutex::new(OpPokedValidator::new(
             op_poked,
             self.cancellation_token.clone(),
             // cancel_challenge garunteed to be Some
@@ -278,19 +309,24 @@ impl ScribeEventsProcessor {
             self.provider.clone(),
             self.flashbot_provider.clone(),
         ))));
-        // TODO: Validate challenge period first...
 
         // Spawn the asynchronous task
         tokio::spawn(async move {
             let handler = challenge_handler.as_ref().unwrap().lock().await;
             let _ = handler.start().await;
         });
-        log::debug!("[{:?}] Spawned New challenger process", self.address);
+        log::debug!(
+            "ScribeEventsProcessor[{:?}] Spawned New challenger process",
+            self.address
+        );
     }
 
     async fn cancel_challenge(&mut self) {
         if let Some(cancel) = &self.cancel_challenge {
-            log::debug!("[{:?}] Cancelling existing challenge", self.address);
+            log::debug!(
+                "ScribeEventsProcessor[{:?}] Cancelling existing challenge",
+                self.address
+            );
             cancel.cancel();
             self.cancel_challenge = None;
         }
@@ -300,17 +336,17 @@ impl ScribeEventsProcessor {
 // Handle the challenge process for a specific OpPoked event after a delay
 // If cancelled before end of delay or inbewteen retries stop process
 // First try challenge with flashbot provider, then with normal provider
-struct ChallengeSender {
-    pub op_poked: OpPoked,
-    pub global_cancel: CancellationToken,
-    pub cancel: CancellationToken,
+struct OpPokedValidator {
+    op_poked: OpPoked,
+    global_cancel: CancellationToken,
+    cancel: CancellationToken,
     address: Address,
     // TODO replace with ScribeOptimisticProviderInstances
     provider: Arc<RetryProviderWithSigner>,
     flashbot_provider: Arc<RetryProviderWithSigner>,
 }
 
-impl ChallengeSender {
+impl OpPokedValidator {
     pub fn new(
         op_poked: OpPoked,
         global_cancel: CancellationToken,
@@ -331,19 +367,22 @@ impl ChallengeSender {
 
     pub async fn start(&self) -> Result<()> {
         // This checked for in tests, tests must be updated if log is changed
-        log::debug!("[{:?}] Challenge started", self.address);
+        log::debug!(
+            "OpPokedValidator[{:?}] OpPoked validation started",
+            self.address
+        );
         // Perform the challenge after 200ms
         let mut challenge_attempts: u64 = 0;
         loop {
             tokio::select! {
                 // Check if the challenge has been cancelled
                 _ = self.cancel.cancelled() => {
-                    log::debug!("[{:?}] Challenge cancelled", self.address);
+                    log::debug!("OpPokedValidator[{:?}] Challenge cancelled", self.address);
                     break;
                 }
                 // Check if the global cancel command sent
                 _ = self.global_cancel.cancelled() => {
-                    log::debug!("[{:?}] Global cancel command received", self.address);
+                    log::debug!("OpPokedValidator[{:?}] Global cancel command received", self.address);
                     break;
                 }
                 _ = tokio::time::sleep(Duration::from_millis(CHALLENGE_POKE_DELAY_MS)) => {
@@ -354,48 +393,80 @@ impl ChallengeSender {
                     ).is_schnorr_signature_valid(self.op_poked.clone()).await?;
 
                     if is_valid {
-                        log::debug!("[{:?}] OpPoked is valid, no need to challenge", self.address);
+                        log::debug!("OpPokedValidator[{:?}] OpPoked is valid, no need to challenge", self.address);
                         break;
                     }
 
                     const RETRY_RANGE_END: u64 = CLASSIC_CHALLENGE_RETRY_COUNT+FLASHBOT_CHALLENGE_RETRY_COUNT;
                     match challenge_attempts {
                         0..FLASHBOT_CHALLENGE_RETRY_COUNT => {
-
+                            log::debug!("OpPokedValidator[{:?}] Attempting flashbot challenge", self.address);
                             let contract = ScribeOptimisticProviderInstance::new(
                                 self.address, self.flashbot_provider.clone()
                             );
 
+                            let result = contract.challenge(self.op_poked.schnorrData.clone()).await;
 
-                            let result = contract.challenge(
-                                self.op_poked.schnorrData.clone()
-                            ).await;
                             match result {
                                 Ok(tx_hash) => {
-                                    log::debug!("[{:?}] Flashbot transaction sent: {:?}", self.address, tx_hash);
+                                    log::info!(
+                                        "OpPokedValidator[{:?}] Flashbot transaction sent: {:?}",
+                                        self.address,
+                                        tx_hash
+                                    );
+
+                                    // Increment the challenge counter
+                                    metrics::inc_challenge_counter(
+                                        self.address,
+                                        tx_hash,
+                                        true,
+                                    );
                                     break;
                                 }
                                 Err(e) => {
-                                    log::error!("[{:?}] Failed to send flashbot transaction: {:?}", self.address, e);
+                                    log::error!(
+                                        "OpPokedValidator[{:?}] Failed to send flashbot transaction: {:?}",
+                                        self.address,
+                                        e
+                                    );
                                 }
                             }
                         }
                         FLASHBOT_CHALLENGE_RETRY_COUNT..RETRY_RANGE_END => {
+                            log::debug!("OpPokedValidator[{:?}] Attempting public challenge", self.address);
                             let contract = ScribeOptimisticProviderInstance::new(
                                 self.address, self.provider.clone()
                             );
                             match contract.challenge(self.op_poked.schnorrData.clone()).await {
                                 Ok(tx_hash) => {
-                                    log::debug!("[{:?}] Challenge transaction sent: {:?}", self.address, tx_hash);
+                                    log::info!(
+                                        "OpPokedValidator[{:?}] Challenge transaction sent: {:?}",
+                                        self.address,
+                                        tx_hash
+                                    );
+                                    // Increment the challenge counter
+                                    metrics::inc_challenge_counter(
+                                        self.address,
+                                        tx_hash,
+                                        false,
+                                    );
                                     break;
                                 }
                                 Err(e) => {
-                                    log::error!("[{:?}] Failed to send challenge transaction: {:?}", self.address, e);
+                                    log::error!(
+                                        "OpPokedValidator[{:?}] Failed to send challenge transaction: {:?}",
+                                        self.address,
+                                        e
+                                    );
                                 }
                             }
                         }
                         _ => {
-                            log::error!("[{:?}] Challenge failed, total attempts {:?}", self.address, challenge_attempts);
+                            log::error!(
+                                "OpPokedValidator[{:?}] Challenge failed, total attempts {:?}",
+                                self.address,
+                                challenge_attempts
+                            );
                             break;
                         }
                     }
