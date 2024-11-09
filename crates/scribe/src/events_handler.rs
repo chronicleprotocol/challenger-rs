@@ -234,7 +234,7 @@ impl ScribeEventsProcessor {
             None => self
                 .get_timestamp_from_block(&event)
                 .await
-                .wrap_err_with(|| format!("Failed to get timestamp from block via RPC call"))?,
+                .wrap_err("Failed to get timestamp from block via RPC call")?,
         };
 
         let current_timestamp = chrono::Utc::now().timestamp() as u64;
