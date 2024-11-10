@@ -124,7 +124,10 @@ impl CustomWallet for Cli {}
 #[tokio::main]
 async fn main() -> Result<()> {
     // Setting default log level to info
-    env_logger::Builder::from_env(Env::default().default_filter_or("info,challenger=debug")).init();
+    env_logger::Builder::from_env(
+        Env::default().default_filter_or("info,challenger=debug,scribe=trace"),
+    )
+    .init();
 
     let args = Cli::parse();
 

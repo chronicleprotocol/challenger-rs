@@ -134,10 +134,11 @@ impl Poller {
 
     // Poll for new events in block range `self.last_processes_block..latest_block`
     async fn poll(&mut self) -> Result<()> {
-        log::trace!("Poller: start polling for new events");
+        log::trace!("Poller: polling for new events");
         // Get latest block number
         let latest_block = self.provider.get_block_number().await?;
         if self.last_processes_block.is_none() {
+            log::info!("Poller: First run, setting last processed block to latest block");
             self.last_processes_block = Some(latest_block);
         }
         // TODO remove this line
