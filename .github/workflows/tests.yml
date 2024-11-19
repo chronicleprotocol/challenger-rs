@@ -23,6 +23,8 @@ jobs:
           cache-on-failure: true
       - run: curl -L https://foundry.paradigm.xyz | bash
       - run: /home/runner/.config/.foundry/bin/foundryup
+      - run: ls -l /home/runner/.config/.foundry/bin
+      - run: anvil --help
       - run: cargo test --workspace --all-targets --all-features
         env:
           RUSTFLAGS: -Dwarnings
