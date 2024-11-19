@@ -25,10 +25,10 @@ jobs:
       - run: /home/runner/.config/.foundry/bin/foundryup
       - run: ls -l /home/runner/.config/.foundry/bin
       # - run: /home/runner/.config/.foundry/bin/anvil --help
-      - run: export PATH="/home/runner/.config/.foundry/bin:$PATH"
-      - run: anvil --help
+      - run: /home/runner/.config/.foundry/bin/anvil --help
       - run: cargo test --workspace --all-targets --all-features
         env:
+          ANVIL_BIN: /home/runner/.config/.foundry/bin/anvil
           RUSTFLAGS: -Dwarnings
 
   clippy:

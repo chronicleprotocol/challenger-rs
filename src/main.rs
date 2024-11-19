@@ -747,11 +747,18 @@ mod integration_tests {
 
     // -- Helper functions --
 
+    // Search for anvil binary in the target directory if `ANVIL_BIN` is set.
+    // Otherwise it will try get `anvil` from system.
+    fn get_anvil() -> Anvil {
+        let anvil_bin = std::env::var("ANVIL_BIN").unwrap_or_else(|_| "anvil".to_string());
+        Anvil::at(anvil_bin)
+    }
+
     async fn create_anvil_instances(
         private_key: &str,
         port: u16,
     ) -> (AnvilInstance, AnvilProvider, EthereumWallet) {
-        let anvil: AnvilInstance = Anvil::new()
+        let anvil: AnvilInstance = get_anvil()
             .port(port)
             .chain_id(31337)
             .block_time_f64(0.1)
