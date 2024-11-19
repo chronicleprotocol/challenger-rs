@@ -1,51 +1,53 @@
 name: test
 
 on:
-    push:
-        branches:
-            - main
-            - master
-    pull_request:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
 
 env:
-    CARGO_TERM_COLOR: always
+  CARGO_TERM_COLOR: always
 
 jobs:
-    test:
-        name: tests
-        runs-on: ubuntu-latest
-        timeout-minutes: 30
-        steps:
-            - uses: actions/checkout@v3
-            - uses: dtolnay/rust-toolchain@stable
-            - uses: Swatinem/rust-cache@v2
-              with:
-                  cache-on-failure: true
-            - run: cargo test --workspace --all-targets --all-features
-              env:
-                  RUSTFLAGS: -Dwarnings
+  test:
+    name: tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v3
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - run: curl -L https://foundry.paradigm.xyz | bash
+      - run: foundryup
+      - run: cargo test --workspace --all-targets --all-features
+        env:
+          RUSTFLAGS: -Dwarnings
 
-    clippy:
-        name: clippy
-        runs-on: ubuntu-latest
-        timeout-minutes: 30
-        steps:
-            - uses: actions/checkout@v3
-            - uses: dtolnay/rust-toolchain@clippy
-            - uses: Swatinem/rust-cache@v2
-              with:
-                  cache-on-failure: true
-            - run: cargo clippy --workspace --all-targets --all-features
-              env:
-                  RUSTFLAGS: -Dwarnings
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v3
+      - uses: dtolnay/rust-toolchain@clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - run: cargo clippy --workspace --all-targets --all-features
+        env:
+          RUSTFLAGS: -Dwarnings
 
-    fmt:
-        name: fmt
-        runs-on: ubuntu-latest
-        timeout-minutes: 30
-        steps:
-            - uses: actions/checkout@v3
-            - uses: dtolnay/rust-toolchain@stable
-              with:
-                  components: rustfmt
-            - run: cargo fmt --all --check
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v3
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
