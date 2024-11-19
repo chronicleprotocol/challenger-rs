@@ -24,6 +24,8 @@ jobs:
       - run: curl -L https://foundry.paradigm.xyz | bash
       - run: /home/runner/.config/.foundry/bin/foundryup
       - run: ls -l /home/runner/.config/.foundry/bin
+      # - run: /home/runner/.config/.foundry/bin/anvil --help
+      - run: export PATH="/home/runner/.config/.foundry/bin:$PATH"
       - run: anvil --help
       - run: cargo test --workspace --all-targets --all-features
         env:
