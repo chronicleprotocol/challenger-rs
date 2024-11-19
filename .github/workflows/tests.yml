@@ -22,9 +22,7 @@ jobs:
         with:
           cache-on-failure: true
       - run: curl -L https://foundry.paradigm.xyz | bash
-      - run: cat $HOME/.bashrc
-      - run: source $HOME/.bashrc
-      - run: foundryup
+      - run: /home/runner/.config/.foundry/bin/foundryup
       - run: cargo test --workspace --all-targets --all-features
         env:
           RUSTFLAGS: -Dwarnings
