@@ -300,7 +300,7 @@ impl ScribeEventsProcessor {
         let challenge_handler = Some(Arc::new(Mutex::new(OpPokedValidator::new(
             op_poked,
             self.cancellation_token.clone(),
-            // cancel_challenge garunteed to be Some
+            // cancel_challenge guaranteed to be Some
             self.cancel_challenge.as_ref().unwrap().clone(),
             self.address,
             self.provider.clone(),
@@ -331,7 +331,7 @@ impl ScribeEventsProcessor {
 }
 
 // Handle the challenge process for a specific OpPoked event after a delay
-// If cancelled before end of delay or inbewteen retries stop process
+// If cancelled before end of delay or inbetween retries stop process
 // First try challenge with flashbot provider, then with normal provider
 struct OpPokedValidator {
     op_poked: OpPoked,

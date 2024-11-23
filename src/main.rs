@@ -139,7 +139,7 @@ async fn main() -> Result<()> {
         "Using {:?} for signing transactions.",
         signer.default_signer().address()
     );
-    let nonce_mananger = NonceFiller::<CachedNonceManager>::default();
+    let nonce_manager = NonceFiller::<CachedNonceManager>::default();
 
     // Create new HTTP client with retry backoff layer
     let client = ClientBuilder::default()
@@ -152,7 +152,7 @@ async fn main() -> Result<()> {
             .with_recommended_fillers()
             // Add chain id request from rpc
             .filler(ChainIdFiller::new(args.chain_id))
-            .filler(nonce_mananger.clone())
+            .filler(nonce_manager.clone())
             // Add default signer
             .wallet(signer.clone())
             .on_client(client),
@@ -170,7 +170,7 @@ async fn main() -> Result<()> {
             .with_recommended_fillers()
             // Add chain id request from rpc
             .filler(ChainIdFiller::new(args.chain_id))
-            .filler(nonce_mananger.clone())
+            .filler(nonce_manager.clone())
             // Add default signer
             .wallet(signer.clone())
             .on_client(flashbot_client),
@@ -429,12 +429,12 @@ mod integration_tests {
     use scribe::events_handler;
     use scribe::events_listener::Poller;
     use scribe_optimistic::{
-        IScribe, LibSecp256k1, ScribeOptimisitic, ScribeOptimisitic::ScribeOptimisiticInstance,
+        IScribe, LibSecp256k1, ScribeOptimistic, ScribeOptimistic::ScribeOptimisticInstance,
     };
     use tokio::task::JoinSet;
     use tokio_util::sync::CancellationToken;
 
-    // In a seperate module due to problems with autoformatter
+    // In a separate module due to problems with autoformatter
     #[rustfmt::skip]
     mod scribe_optimistic {
         use alloy::sol;
@@ -442,7 +442,7 @@ mod integration_tests {
             #[allow(missing_docs)]
             #[sol(rpc)]
             #[derive(Debug)]
-            ScribeOptimisitic,
+            ScribeOptimistic,
             "tests/fixtures/bytecode/ScribeOptimistic.json"
         );
     }
@@ -477,7 +477,7 @@ mod integration_tests {
 
     #[tokio::test]
     async fn challenge_contract() {
-        // Test an invalid poke on multiple scribe instances in parrallel are successfully challenged
+        // Test an invalid poke on multiple scribe instances in parallel are successfully challenged
         const NUM_SCRIBE_INSTANCES: usize = 100;
         const CHALLENGE_PERIOD: u16 = 1000;
 
@@ -499,7 +499,7 @@ mod integration_tests {
                 signer.clone(),
                 CHALLENGE_PERIOD,
             ));
-            // Only deploy at most 20 in parrallel
+            // Only deploy at most 20 in parallel
             if i % 20 == 0 {
                 scribes.append(&mut join_all(deployments).await);
                 deployments = vec![];
@@ -521,7 +521,7 @@ mod integration_tests {
         }
 
         // Update current anvil time to be far from last scribe config update
-        // The more scribe instances the firther back in time a the anvil block timestamp doesn't stay in sync with chrono
+        // The more scribe instances the further back in time a the anvil block timestamp doesn't stay in sync with chrono
         // TODO add challenge period variable
         let current_timestamp =
             (chrono::Utc::now().timestamp() as u64) - (CHALLENGE_PERIOD as u64) + 1;
@@ -555,7 +555,7 @@ mod integration_tests {
         // Let first poll occur on poller
         tokio::time::sleep(tokio::time::Duration::from_millis(1200)).await;
 
-        // Increase current block count to move away from poller intialisation block
+        // Increase current block count to move away from poller initialisation block
         anvil_provider
             .anvil_mine(Some(U256::from(1)), Some(U256::from(1)))
             .await
@@ -637,7 +637,7 @@ mod integration_tests {
         // Test an invalid poke on multiple scribe instances is successfully challenged
         // ------------------------------------------------------------------------------------------------------------
         let private_key = PRIVATE_KEY;
-        // Use a new port for each test to avoid conflicts if tests run in parrallel
+        // Use a new port for each test to avoid conflicts if tests run in parallel
         let (anvil, anvil_provider, signer) = create_anvil_instances(private_key, 8546).await;
 
         // Set to a low current time for now, this avoids having stale poke error later
@@ -688,7 +688,7 @@ mod integration_tests {
         // Let first poll occur on poller
         tokio::time::sleep(tokio::time::Duration::from_millis(1200)).await;
 
-        // Increase current block count to move away from poller intialisation block
+        // Increase current block count to move away from poller initialisation block
         anvil_provider
             .anvil_mine(Some(U256::from(1)), Some(U256::from(1)))
             .await
@@ -808,7 +808,7 @@ mod integration_tests {
         provider: P,
         signer: EthereumWallet,
         challenge_period: u16,
-    ) -> ScribeOptimisiticInstance<T, P, N> {
+    ) -> ScribeOptimisticInstance<T, P, N> {
         // deploy scribe instance
         let initial_authed = signer.default_signer().address();
         // let private_key = signer.
@@ -818,8 +818,7 @@ mod integration_tests {
             0123456789abcdef0123456789abcdef
         "
         );
-        let scribe_optimistic =
-            ScribeOptimisitic::deploy(provider, initial_authed, FixedBytes(wat));
+        let scribe_optimistic = ScribeOptimistic::deploy(provider, initial_authed, FixedBytes(wat));
 
         let scribe_optimistic = scribe_optimistic.await.unwrap();
         let receipt = scribe_optimistic.setBar(1);
@@ -883,13 +882,13 @@ mod integration_tests {
             .layer(RetryBackoffLayer::new(15, 200, 300))
             .http(url);
 
-        let nonce_mananger = NonceFiller::<CachedNonceManager>::default();
+        let nonce_manager = NonceFiller::<CachedNonceManager>::default();
 
         let provider = Arc::new(
             ProviderBuilder::new()
                 .with_recommended_fillers()
                 .filler(ChainIdFiller::new(Some(31337)))
-                .filler(nonce_mananger.clone())
+                .filler(nonce_manager.clone())
                 .wallet(signer.clone())
                 .on_client(client),
         );
@@ -899,7 +898,7 @@ mod integration_tests {
         let mut set: JoinSet<()> = JoinSet::new();
         let (tx, rx) = tokio::sync::mpsc::channel::<EventWithMetadata>(100);
 
-        // let addresses = vec![scribe_optimisitic.address().clone()];
+        // let addresses = vec![scribe_optimistic.address().clone()];
 
         // Create events listener
         let mut poller = Poller::new(
@@ -969,7 +968,7 @@ mod integration_tests {
     async fn make_invalid_op_poke(
         age: u64,
         private_key: &str,
-        scribe_optimisitic: &ScribeOptimisiticInstance<Http<Client>, AnvilProvider, Ethereum>,
+        scribe_optimistic: &ScribeOptimisticInstance<Http<Client>, AnvilProvider, Ethereum>,
     ) {
         let poke_data: IScribe::PokeData = IScribe::PokeData {
             val: 10,
@@ -982,7 +981,7 @@ mod integration_tests {
             commitment: alloy::primitives::Address::ZERO,
             feedIds: hex!("00").into(),
         };
-        let op_poke_message = scribe_optimisitic
+        let op_poke_message = scribe_optimistic
             .constructOpPokeMessage(poke_data.clone(), schnorr_data.clone())
             .call()
             .await
@@ -1001,8 +1000,7 @@ mod integration_tests {
         };
 
         // Make the invalid poke
-        let receipt =
-            scribe_optimisitic.opPoke(poke_data.clone(), schnorr_data.clone(), ecdsa_data);
+        let receipt = scribe_optimistic.opPoke(poke_data.clone(), schnorr_data.clone(), ecdsa_data);
         let receipt = receipt.send().await.expect("Failed to send op poke");
         receipt.watch().await.expect("Failed to watch op poke");
     }
