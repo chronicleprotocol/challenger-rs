@@ -13,7 +13,7 @@
 //  You should have received a copy of the GNU Affero General Public License
 //  along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use alloy::primitives::{Address, B256};
+use alloy::primitives::Address;
 use metrics::{counter, describe_counter, describe_gauge, gauge};
 
 const LAST_SCANNED_BLOCK_GAUGE: &str = "challenger_last_scanned_block";
@@ -37,11 +37,10 @@ pub fn inc_errors_counter(address: Address, error: &str) {
 }
 
 /// `inc_challenge_counter` increments the challenges counter for given `address` and `tx` hash.
-pub fn inc_challenge_counter(address: Address, tx: B256, flashbots: bool) {
+pub fn inc_challenge_counter(address: Address, flashbots: bool) {
     let labels = [
         ("address", format!("{:?}", address)),
         ("flashbots", format!("{:?}", flashbots)),
-        ("tx", format!("{:?}", tx)),
     ];
     counter!(CHALLENGE_COUNTER, &labels).increment(1);
 }

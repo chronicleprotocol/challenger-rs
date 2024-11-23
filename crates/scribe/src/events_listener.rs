@@ -166,7 +166,11 @@ impl Poller {
                     for log in logs {
                         match EventWithMetadata::from_log(log) {
                             Ok(event) => {
-                                log::debug!("Poller: [{:?}] Event received: {:?}", chunk, &event);
+                                log::debug!(
+                                    "Poller: [{:?}] Event received for address {:?} processing",
+                                    chunk,
+                                    &event.address
+                                );
                                 // Send event to the channel
                                 self.tx.send(event).await?;
                             }

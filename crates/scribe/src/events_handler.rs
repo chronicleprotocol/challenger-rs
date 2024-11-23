@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use alloy::primitives::Address;
+use alloy::primitives::{Address, FixedBytes};
 use alloy::providers::Provider;
 use alloy::rpc::types::BlockTransactionsKind;
 use eyre::{bail, Context, Result};
@@ -100,7 +100,6 @@ impl EventDistributor {
                     break;
                 }
                 event = self.rx.recv() => {
-                    log::trace!("EventDistributor: Received event: {:?}", event);
                     if let Some(event) = event {
                         // Send the event to the appropriate contract handler
                         match self.txs.get(&event.address) {
@@ -181,8 +180,6 @@ impl ScribeEventsProcessor {
                 }
                 // new [EventWithMetadata] received, process it...
                 event = self.rx.recv() => {
-                    log::trace!("ScribeEventsProcessor[{:?}] Received event: {:?}", self.address, event);
-
                     if let Some(event) = event {
                         match &event.event {
                             // For `OpPoked` events, check if `schnorr_signature` is valid,
@@ -371,8 +368,6 @@ impl OpPokedValidator {
             "OpPokedValidator[{:?}] OpPoked validation started",
             self.address
         );
-        // Perform the challenge after 200ms
-        let mut challenge_attempts: u64 = 0;
         loop {
             tokio::select! {
                 // Check if the challenge has been cancelled
@@ -397,83 +392,103 @@ impl OpPokedValidator {
                         break;
                     }
 
-                    const RETRY_RANGE_END: u64 = CLASSIC_CHALLENGE_RETRY_COUNT+FLASHBOT_CHALLENGE_RETRY_COUNT;
-                    match challenge_attempts {
-                        0..FLASHBOT_CHALLENGE_RETRY_COUNT => {
-                            log::debug!("OpPokedValidator[{:?}] Attempting flashbot challenge", self.address);
-                            let contract = ScribeOptimisticProviderInstance::new(
-                                self.address, self.flashbot_provider.clone()
-                            );
-
-                            let result = contract.challenge(self.op_poked.schnorrData.clone()).await;
-
-                            match result {
-                                Ok(tx_hash) => {
-                                    log::info!(
-                                        "OpPokedValidator[{:?}] Flashbot transaction sent: {:?}",
-                                        self.address,
-                                        tx_hash
-                                    );
-
-                                    // Increment the challenge counter
-                                    metrics::inc_challenge_counter(
-                                        self.address,
-                                        tx_hash,
-                                        true,
-                                    );
-                                    break;
-                                }
-                                Err(e) => {
-                                    log::error!(
-                                        "OpPokedValidator[{:?}] Failed to send flashbot transaction: {:?}",
-                                        self.address,
-                                        e
-                                    );
-                                }
-                            }
-                        }
-                        FLASHBOT_CHALLENGE_RETRY_COUNT..RETRY_RANGE_END => {
-                            log::debug!("OpPokedValidator[{:?}] Attempting public challenge", self.address);
-                            let contract = ScribeOptimisticProviderInstance::new(
-                                self.address, self.provider.clone()
-                            );
-                            match contract.challenge(self.op_poked.schnorrData.clone()).await {
-                                Ok(tx_hash) => {
-                                    log::info!(
-                                        "OpPokedValidator[{:?}] Challenge transaction sent: {:?}",
-                                        self.address,
-                                        tx_hash
-                                    );
-                                    // Increment the challenge counter
-                                    metrics::inc_challenge_counter(
-                                        self.address,
-                                        tx_hash,
-                                        false,
-                                    );
-                                    break;
-                                }
-                                Err(e) => {
-                                    log::error!(
-                                        "OpPokedValidator[{:?}] Failed to send challenge transaction: {:?}",
-                                        self.address,
-                                        e
-                                    );
-                                }
-                            }
-                        }
-                        _ => {
-                            log::error!(
-                                "OpPokedValidator[{:?}] Challenge failed, total attempts {:?}",
-                                self.address,
-                                challenge_attempts
-                            );
-                            break;
-                        }
-                    }
-                    challenge_attempts += 1;
+                    self.challenge().await?;
+                    break;
                 }
             }
         }
         Ok(())
+    }
+
+    // Perform the challenge process, first with flashbot provider, then with normal provider.
+    async fn challenge(&self) -> Result<FixedBytes<32>> {
+        // Perform the challenge after 200ms
+        let mut challenge_attempts: u64 = 0;
+        const RETRY_RANGE_END: u64 = CLASSIC_CHALLENGE_RETRY_COUNT + FLASHBOT_CHALLENGE_RETRY_COUNT;
+
+        log::info!(
+            "OpPokedValidator[{:?}] Challending data: {:?}",
+            self.address,
+            self.op_poked
+        );
+
+        loop {
+            match challenge_attempts {
+                0..FLASHBOT_CHALLENGE_RETRY_COUNT => {
+                    log::debug!(
+                        "OpPokedValidator[{:?}] Attempting flashbot challenge",
+                        self.address
+                    );
+                    let contract = ScribeOptimisticProviderInstance::new(
+                        self.address,
+                        self.flashbot_provider.clone(),
+                    );
+
+                    let result = contract.challenge(self.op_poked.schnorrData.clone()).await;
+
+                    match result {
+                        Ok(tx_hash) => {
+                            log::info!(
+                                "OpPokedValidator[{:?}] Flashbot transaction sent: {:?}",
+                                self.address,
+                                tx_hash
+                            );
+
+                            // Increment the challenge counter
+                            metrics::inc_challenge_counter(self.address, true);
+                            return Ok(tx_hash);
+                        }
+                        Err(e) => {
+                            log::error!(
+                                "OpPokedValidator[{:?}] Failed to send flashbot transaction: {:?}",
+                                self.address,
+                                e
+                            );
+                        }
+                    }
+                }
+                FLASHBOT_CHALLENGE_RETRY_COUNT..RETRY_RANGE_END => {
+                    log::debug!(
+                        "OpPokedValidator[{:?}] Attempting public challenge",
+                        self.address
+                    );
+                    let contract =
+                        ScribeOptimisticProviderInstance::new(self.address, self.provider.clone());
+                    match contract.challenge(self.op_poked.schnorrData.clone()).await {
+                        Ok(tx_hash) => {
+                            log::info!(
+                                "OpPokedValidator[{:?}] Challenge transaction sent: {:?}",
+                                self.address,
+                                tx_hash
+                            );
+                            // Increment the challenge counter
+                            metrics::inc_challenge_counter(self.address, false);
+                            return Ok(tx_hash);
+                        }
+                        Err(e) => {
+                            log::error!(
+                                "OpPokedValidator[{:?}] Failed to send challenge transaction: {:?}",
+                                self.address,
+                                e
+                            );
+                        }
+                    }
+                }
+                _ => {
+                    log::error!(
+                        "OpPokedValidator[{:?}] Challenge failed, total attempts {:?}",
+                        self.address,
+                        challenge_attempts
+                    );
+                    break;
+                }
+            }
+            challenge_attempts += 1;
+        }
+
+        bail!(format!(
+            "OpPokedValidator[{:?}] Challenge failed, total attempts {:?}",
+            self.address, challenge_attempts
+        ))
     }
 }
