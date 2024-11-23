@@ -368,36 +368,34 @@ impl OpPokedValidator {
             "OpPokedValidator[{:?}] OpPoked validation started",
             self.address
         );
-        loop {
-            tokio::select! {
-                // Check if the challenge has been cancelled
-                _ = self.cancel.cancelled() => {
-                    log::debug!("OpPokedValidator[{:?}] Challenge cancelled", self.address);
-                    break;
-                }
-                // Check if the global cancel command sent
-                _ = self.global_cancel.cancelled() => {
-                    log::debug!("OpPokedValidator[{:?}] Global cancel command received", self.address);
-                    break;
-                }
-                _ = tokio::time::sleep(Duration::from_millis(CHALLENGE_POKE_DELAY_MS)) => {
-                    // Verify that the OpPoked is valid
-                    let is_valid = ScribeOptimisticProviderInstance::new(
-                        self.address,
-                        self.provider.clone()
-                    ).is_schnorr_signature_valid(self.op_poked.clone()).await?;
+        tokio::select! {
+            // Check if the challenge has been cancelled
+            _ = self.cancel.cancelled() => {
+                log::debug!("OpPokedValidator[{:?}] Challenge cancelled", self.address);
+                Ok(())
+            }
+            // Check if the global cancel command sent
+            _ = self.global_cancel.cancelled() => {
+                log::debug!("OpPokedValidator[{:?}] Global cancel command received", self.address);
+                Ok(())
+            }
+            _ = tokio::time::sleep(Duration::from_millis(CHALLENGE_POKE_DELAY_MS)) => {
+                // Verify that the OpPoked is valid
+                let is_valid = ScribeOptimisticProviderInstance::new(
+                    self.address,
+                    self.provider.clone()
+                ).is_schnorr_signature_valid(self.op_poked.clone()).await?;
 
-                    if is_valid {
-                        log::debug!("OpPokedValidator[{:?}] OpPoked is valid, no need to challenge", self.address);
-                        break;
-                    }
-
-                    self.challenge().await?;
-                    break;
+                if is_valid {
+                    log::debug!("OpPokedValidator[{:?}] OpPoked is valid, no need to challenge", self.address);
+                    return Ok(());
                 }
+
+                // Perform the challenge process
+                self.challenge().await?;
+                Ok(())
             }
         }
-        Ok(())
     }
 
     // Perform the challenge process, first with flashbot provider, then with normal provider.
@@ -429,7 +427,7 @@ impl OpPokedValidator {
                     match result {
                         Ok(tx_hash) => {
                             log::info!(
-                                "OpPokedValidator[{:?}] Flashbot transaction sent: {:?}",
+                                "OpPokedValidator[{:?}] Flashbot transaction sent via flashbots RPC: {:?}",
                                 self.address,
                                 tx_hash
                             );
@@ -440,7 +438,7 @@ impl OpPokedValidator {
                         }
                         Err(e) => {
                             log::error!(
-                                "OpPokedValidator[{:?}] Failed to send flashbot transaction: {:?}",
+                                "OpPokedValidator[{:?}] Failed to send challenge transaction via flashbots: {:?}",
                                 self.address,
                                 e
                             );
@@ -457,7 +455,7 @@ impl OpPokedValidator {
                     match contract.challenge(self.op_poked.schnorrData.clone()).await {
                         Ok(tx_hash) => {
                             log::info!(
-                                "OpPokedValidator[{:?}] Challenge transaction sent: {:?}",
+                                "OpPokedValidator[{:?}] Challenge transaction sent via public RPC: {:?}",
                                 self.address,
                                 tx_hash
                             );
@@ -467,7 +465,7 @@ impl OpPokedValidator {
                         }
                         Err(e) => {
                             log::error!(
-                                "OpPokedValidator[{:?}] Failed to send challenge transaction: {:?}",
+                                "OpPokedValidator[{:?}] Failed to send challenge transaction via public RPC: {:?}",
                                 self.address,
                                 e
                             );
