@@ -13,7 +13,7 @@
 //  You should have received a copy of the GNU Affero General Public License
 //  along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use ethers::types::{Address, H256};
+use alloy::primitives::Address;
 use metrics::{counter, describe_counter, describe_gauge, gauge};
 
 const LAST_SCANNED_BLOCK_GAUGE: &str = "challenger_last_scanned_block";
@@ -21,30 +21,26 @@ const ERRORS_COUNTER: &str = "challenger_errors_total";
 const CHALLENGE_COUNTER: &str = "challenger_challenges_total";
 
 /// `set_last_scanned_block` sets the last scanned block for given `address` and `from` account.
-pub fn set_last_scanned_block(address: Address, from: Address, block: i64) {
-    let labels = [
-        ("address", format!("{:?}", address)),
-        (("from"), format!("{:?}", from)),
-    ];
+pub fn set_last_scanned_block(from: Address, block: i64) {
+    let labels = [(("from"), format!("{:?}", from))];
     gauge!(LAST_SCANNED_BLOCK_GAUGE, &labels).set(block as f64);
 }
 
 /// `inc_errors_counter` increments the errors counter for given `address`, `from` account
-pub fn inc_errors_counter(address: Address, from: Address, error: &str) {
+pub fn inc_errors_counter(address: Address, error: &str) {
+    // TODO: Use it...
     let labels = [
         ("address", format!("{:?}", address)),
-        ("from", format!("{:?}", from)),
         ("error", String::from(error)),
     ];
     counter!(ERRORS_COUNTER, &labels).increment(1);
 }
 
-/// `inc_challenge_counter` increments the challenges counter for given `address`, `from` account and `tx` hash.
-pub fn inc_challenge_counter(address: Address, from: Address, tx: H256) {
+/// `inc_challenge_counter` increments the challenges counter for given `address` and `tx` hash.
+pub fn inc_challenge_counter(address: Address, flashbots: bool) {
     let labels = [
         ("address", format!("{:?}", address)),
-        ("from", format!("{:?}", from)),
-        ("tx", format!("{:?}", tx)),
+        ("flashbots", format!("{:?}", flashbots)),
     ];
     counter!(CHALLENGE_COUNTER, &labels).increment(1);
 }

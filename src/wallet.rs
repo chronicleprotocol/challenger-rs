@@ -13,7 +13,10 @@
 //  You should have received a copy of the GNU Affero General Public License
 //  along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use ethers::signers::LocalWallet;
+use alloy::{
+    network::EthereumWallet,
+    signers::local::{LocalSigner, PrivateKeySigner},
+};
 use eyre::{bail, Result, WrapErr};
 use log::debug;
 use std::{
@@ -26,12 +29,13 @@ pub trait PrivateKeyWallet {
     fn raw_private_key(&self) -> Option<String>;
 
     #[track_caller]
-    fn from_private_key(&self, private_key: &str) -> Result<Option<LocalWallet>> {
+    #[allow(clippy::wrong_self_convention)]
+    fn from_private_key(&self, private_key: &str) -> Result<Option<EthereumWallet>> {
         debug!("Using private key from arguments");
 
         let privk = private_key.trim().strip_prefix("0x").unwrap_or(private_key);
-        match privk.parse::<LocalWallet>() {
-            Ok(wallet) => Ok(Some(wallet)),
+        match privk.parse::<PrivateKeySigner>() {
+            Ok(signer) => Ok(Some(EthereumWallet::new(signer))),
             Err(err) => bail!("Failed to parse private key: {:?}", err),
         }
     }
@@ -79,7 +83,7 @@ pub trait KeystoreWallet {
         keystore_path: Option<&PathBuf>,
         keystore_password: Option<&String>,
         keystore_password_file: Option<&PathBuf>,
-    ) -> Result<Option<LocalWallet>> {
+    ) -> Result<Option<EthereumWallet>> {
         Ok(
             match (keystore_path, keystore_password, keystore_password_file) {
                 (Some(path), Some(password), _) => {
@@ -87,20 +91,20 @@ pub trait KeystoreWallet {
 
                     debug!("Using Keystore file from `{path:?}` and raw password");
 
-                    Some(
-                        LocalWallet::decrypt_keystore(&path, password)
-                            .wrap_err_with(|| format!("Failed to decrypt keystore {path:?}"))?,
-                    )
+                    let signer = LocalSigner::decrypt_keystore(&path, password)
+                        .wrap_err_with(|| format!("Failed to decrypt keystore {path:?}"))?;
+
+                    Some(EthereumWallet::new(signer))
                 }
                 (Some(path), _, Some(password_file)) => {
                     let path = self.find_keystore_file(path)?;
 
                     debug!("Using Keystore file from `{path:?}` and password from file");
 
-                    Some(
-                        LocalWallet::decrypt_keystore(&path, self.password_from_file(password_file)?)
-                            .wrap_err_with(|| format!("Failed to decrypt keystore {path:?} with password file {password_file:?}"))?,
-                    )
+                    let signer = LocalSigner::decrypt_keystore(&path, self.password_from_file(password_file)?)
+                        .wrap_err_with(|| format!("Failed to decrypt keystore {path:?} with password file {password_file:?}"))?;
+
+                    Some(EthereumWallet::new(signer))
                 }
                 (Some(path), None, None) => {
                     let path = self.find_keystore_file(path)?;
@@ -110,7 +114,11 @@ pub trait KeystoreWallet {
                     );
 
                     let password = rpassword::prompt_password("Enter keystore password:")?;
-                    Some(LocalWallet::decrypt_keystore(path, password)?)
+
+                    let signer = LocalSigner::decrypt_keystore(&path, password)
+                        .wrap_err_with(|| format!("Failed to decrypt keystore {path:?}"))?;
+
+                    Some(EthereumWallet::new(signer))
                 }
                 (None, _, _) => None,
             },
@@ -120,7 +128,7 @@ pub trait KeystoreWallet {
 
 pub trait CustomWallet: PrivateKeyWallet + KeystoreWallet {
     /// Generates wallet for future sign
-    fn wallet(&self) -> Result<Option<LocalWallet>> {
+    fn wallet(&self) -> Result<Option<EthereumWallet>> {
         match (&self.raw_private_key(), &self.keystore_path()) {
             (Some(secret), _) => self.from_private_key(secret),
             (_, Some(key)) => self.get_from_keystore(
