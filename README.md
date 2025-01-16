@@ -36,6 +36,65 @@ challenger -a 0x891E368fE81cBa2aC6F6cc4b98e684c106e2EF4f -a 0x******* --rpc-url 
 By default `challenger` uses log level `info`.
 If you want to get debug information use `RUST_LOG=debug` env variable !
 
+# Development
+
+## Rust toolchain
+
+For this project we use the nightly toolchain. To install it, run:
+```sh
+rustup toolchain install nightly
+```
+
+To set the nightly toolchain as the default for folder, run:
+```sh
+rustup override set nightly
+```
+
+As well we provide a `rust-toolchain.toml` file that sets the nightly toolchain for the project.
+
+### Rust analyzer
+
+For rust-analyzer to work correctly, you need to install the nightly toolchain and set it as the default for the folder.
+Also `RUST_TOOLCHAIN` environment variable should be set to `nightly`.
+
+Intellij Example:
+
+```
+settings -> Language & Frameworks -> Rust -> Rustfmt
+
+Add the environment Variable = "RUSTUP_TOOLCHAIN": "nightly"
+
+Add Additional argument =  "+nightly"
+```
+
+
+Zed example:
+
+`.zed/settings.json`
+```json
+// Folder-specific settings
+//
+// For a full list of overridable settings, and general information on folder-specific settings,
+// see the documentation: https://zed.dev/docs/configuring-zed#settings-files
+{
+  "tab_size": 2,
+  "lsp": {
+    "rust-analyzer": {
+      "initialization_options": {
+        "server": {
+          "extraEnv": {
+            "RUSTUP_TOOLCHAIN": "nightly"
+          }
+        },
+        "rustfmt": {
+          "extraArgs": ["+nightly"]
+        }
+      }
+    }
+  }
+}
+```
+
 
 ## Building docker image
 
@@ -45,7 +104,7 @@ SERVER_VERSION have to be same as release but without `v`, if release is `v0.0.1
 docker build --build-arg SERVER_VERSION=0.0.10 -t challenger .
 ```
 
-usage: 
+usage:
 
 ```bash
 docker run --rm challenger
@@ -93,7 +152,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 In this example, we're using the `Http` provider from the `ethers` crate to connect to the Ethereum mainnet. We're also passing in a contract address and a tick interval of 30 seconds to the `Challenger::new` method.
 
-Once you have an instance of the `Challenger` struct, you can start processing pokes by calling the `start` method. This method will start continues checks for new pokes every `tick_interval` seconds and process them if they're within the challenge period. 
+Once you have an instance of the `Challenger` struct, you can start processing pokes by calling the `start` method. This method will start continues checks for new pokes every `tick_interval` seconds and process them if they're within the challenge period.
 
 You can also customize the behavior of the `Challenger` struct by setting the `max_failure_count` field to control how many failures are allowed before processing is stopped for a particular address, and by setting the `challenge_period_reload_interval` field to control how often the challenge period is reloaded from the contract. Here's an example:
 
