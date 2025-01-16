@@ -113,7 +113,7 @@ impl EventDistributor {
                       _ => {
                           // Should never happen
                           log::warn!(
-                              "EventDistributor: Received event from unknown address or receiver for it is dead: {:?}",
+                              "EventDistributor: Received event from unknown address or receiver is dead: {:?}",
                               event
                           );
                       }
@@ -292,7 +292,7 @@ impl ScribeEventsProcessor {
   }
 
   async fn spawn_challenge(&mut self, op_poked: OpPoked) {
-    // Ensure there is no existing challenge existing
+    // Ensure there is no existing challenge
     self.cancel_challenge().await;
     // Create a new cancellation token
     self.cancel_challenge = Some(CancellationToken::new());
