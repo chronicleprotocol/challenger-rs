@@ -983,7 +983,7 @@ mod integration_tests {
       .sign_hash_sync(&op_poke_message)
       .expect("Failed to sign message");
     let ecdsa_data = IScribe::ECDSAData {
-      v: 0x1b + (signature.v().to_u64() as u8),
+      v: 0x1b + (signature.v() as u8),
       r: FixedBytes(signature.r().to_be_bytes()),
       s: FixedBytes(signature.s().to_be_bytes()),
     };
