@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.4
-FROM rust:alpine3.19 as build-environment
+FROM rust:alpine3.20 as build-environment
 
 ARG TARGETARCH
 WORKDIR /opt
@@ -10,20 +10,20 @@ RUN echo "export RUSTFLAGS='-Ctarget-feature=-crt-static'" >> $HOME/.profile
 # Mac M1 workaround
 RUN [[ "$TARGETARCH" = "arm64" ]] && echo "export CFLAGS=-mno-outline-atomics" >> $HOME/.profile || true
 
+# Install nightly and set as default toolchain
+RUN rustup update nightly && rustup default nightly
+
 WORKDIR /opt/challenger
 COPY . .
 
-RUN --mount=type=cache,target=/root/.cargo/registry \
-    --mount=type=cache,target=/root/.cargo/git \
-    --mount=type=cache,target=/opt/challenger/target \
-    source $HOME/.profile \
+RUN source $HOME/.profile \
     && cargo build --release \
     && mkdir out \
     && mv target/release/challenger out/challenger \
     && strip out/challenger;
 
 # Runner image
-FROM alpine:3.19 as challenger-client
+FROM alpine:3.20 as challenger-client
 
 RUN apk add --no-cache linux-headers gcompat libgcc
 
