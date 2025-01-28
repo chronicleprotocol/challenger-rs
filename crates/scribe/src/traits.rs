@@ -12,17 +12,3 @@
 //
 //  You should have received a copy of the GNU Affero General Public License
 //  along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
-pub mod contract;
-pub mod error;
-
-mod event_processor;
-pub use event_processor::ScribeEventsProcessor;
-
-mod events_poller;
-pub use events_poller::{Poller, RetryProviderWithSigner};
-
-mod event;
-pub use event::Event;
-
-pub mod metrics;
