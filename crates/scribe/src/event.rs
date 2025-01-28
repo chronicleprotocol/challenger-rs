@@ -1,4 +1,4 @@
-use crate::{contract::ScribeOptimistic, error::Error};
+use crate::{contract::ScribeOptimistic, error::ContractError};
 use alloy::{primitives::Address, rpc::types::Log, sol_types::SolEvent};
 
 /// Events emitted by the ScribeOptimistic contract.
@@ -28,11 +28,11 @@ impl Event {
 }
 
 impl TryFrom<Log> for Event {
-  type Error = Error;
+  type Error = ContractError;
 
   fn try_from(log: Log) -> std::result::Result<Self, Self::Error> {
     let Some(topic) = log.topic0() else {
-      return Err(Error::Topic0MissingForLog {
+      return Err(ContractError::Topic0MissingForLog {
         tx_hash: log.transaction_hash,
         address: log.address(),
       });
@@ -44,7 +44,7 @@ impl TryFrom<Log> for Event {
       ScribeOptimistic::OpPokeChallengedSuccessfully::SIGNATURE_HASH => {
         Ok(Self::OpPokeChallengedSuccessfully(log.log_decode()?))
       }
-      _ => Err(Error::UnknownTopic0 {
+      _ => Err(ContractError::UnknownTopic0 {
         topic: topic.to_string(),
         tx_hash: log.transaction_hash,
         address: log.address(),

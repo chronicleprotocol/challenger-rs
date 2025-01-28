@@ -14,25 +14,25 @@
 //  along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use alloy::{
-  primitives::{Address, FixedBytes},
+  primitives::{Address, TxHash},
   providers::Provider,
   rpc::types::{BlockTransactionsKind, Log},
 };
-use eyre::{bail, Context, Result};
 use std::{sync::Arc, time::Duration};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
   contract::{ScribeContract, ScribeContractInstance, ScribeOptimistic::OpPoked},
+  error::{ProcessorError, ProcessorResult},
   event::Event,
   metrics, RetryProviderWithSigner,
 };
 
 const GAS_LIMIT: u64 = 200000;
 const CHALLENGE_POKE_DELAY_MS: u64 = 200;
-const FLASHBOT_CHALLENGE_RETRY_COUNT: u64 = 3;
-const CLASSIC_CHALLENGE_RETRY_COUNT: u64 = 3;
+const FLASHBOT_CHALLENGE_RETRY_COUNT: u16 = 3;
+const CLASSIC_CHALLENGE_RETRY_COUNT: u16 = 3;
 
 // Receives preparsed [crate::contract::EventWithMetadata] events for a `ScribeOptimistic` instance on address,
 // validates `OpPoked` events and challenges them if they are invalid and within the challenge period.
@@ -76,16 +76,23 @@ impl ScribeEventsProcessor {
   }
 
   // Pulls the challenge period from the contract and stores it in the struct.
-  async fn refresh_challenge_period(&mut self) -> Result<()> {
+  async fn refresh_challenge_period(&mut self) -> ProcessorResult<()> {
     let period = ScribeContractInstance::new(self.address, self.provider.clone())
       .get_challenge_period()
       .await?;
+
+    log::debug!(
+      "ScribeEventsProcessor[{:?}] Challenge period fetched: {:?}",
+      self.address,
+      period
+    );
 
     self.challenge_period = Some(period as u64);
     Ok(())
   }
 
-  pub async fn start(&mut self) -> Result<()> {
+  /// Starts the handling events.
+  pub async fn start(&mut self) {
     log::debug!(
       "ScribeEventsProcessor[{:?}] Starting new contract handler",
       self.address
@@ -101,9 +108,9 @@ impl ScribeEventsProcessor {
                 "ScribeEventsProcessor[{:?}] Cancellation requested, stopping contract handler",
                 self.address
             );
-            return Ok(());
+            return;
         }
-        // new [EventWithMetadata] received, process it...
+        // new [Event] received, process it...
         event = self.rx.recv() => {
             match event {
               Some(event) => {
@@ -127,7 +134,7 @@ impl ScribeEventsProcessor {
     }
   }
 
-  async fn process_event(&mut self, event: Event) -> Result<()> {
+  async fn process_event(&mut self, event: Event) -> ProcessorResult<()> {
     match event {
       Event::OpPoked(log) => {
         // For `OpPoked` events, check if `schnorr_signature` is valid,
@@ -141,8 +148,9 @@ impl ScribeEventsProcessor {
         if self.is_log_stale(&log).await? {
           // This log is expected in tests, tests must be updated if log message is changed
           log::debug!(
-            "ScribeEventsProcessor[{:?}] OpPoked received outside of challenge period",
-            self.address
+            "ScribeEventsProcessor[{:?}] OpPoked {:?} received outside of challenge period",
+            self.address,
+            log.transaction_hash,
           );
 
           return Ok(());
@@ -157,10 +165,6 @@ impl ScribeEventsProcessor {
 
       // If the challenge is already successful, cancel the previous challenge process
       Event::OpPokeChallengedSuccessfully { .. } => {
-        log::debug!(
-                "ScribeEventsProcessor[{:?}] OpPokeChallengedSuccessfully received, cancelling challenge process",
-                self.address
-            );
         self.cancel_challenge();
       }
     }
@@ -171,19 +175,18 @@ impl ScribeEventsProcessor {
   // Checks if the log is stale, i.e. if the event is outside of the challenge period.
   // If the block timestamp is missing, it is fetched from the block number.
   // If the block number is also missing, an error is returned.
-  async fn is_log_stale(&self, log: &Log<OpPoked>) -> Result<bool> {
+  async fn is_log_stale(&self, log: &Log<OpPoked>) -> ProcessorResult<bool> {
     // Check if the poke is within the challenge period
     let event_timestamp = match log.block_timestamp {
       Some(timestamp) => timestamp,
       None => {
         if log.block_number.is_none() {
-          bail!("Block number and timestamp are missing in the log");
+          return Err(ProcessorError::NoBlockNumberInLog(log.transaction_hash));
         }
 
         self
           .get_timestamp_from_block(log.block_number.unwrap())
-          .await
-          .wrap_err("Failed to get timestamp from block via RPC call")?
+          .await?
       }
     };
 
@@ -199,13 +202,13 @@ impl ScribeEventsProcessor {
   }
 
   // Gets the timestamp from the block by `event.log.block_number`, if it is missing, returns an error
-  async fn get_timestamp_from_block(&self, block_number: u64) -> Result<u64> {
+  async fn get_timestamp_from_block(&self, block_number: u64) -> ProcessorResult<u64> {
     let Some(block) = self
       .provider
       .get_block(block_number.into(), BlockTransactionsKind::Hashes)
       .await?
     else {
-      bail!("Block with number {:?} not found", block_number);
+      return Err(ProcessorError::FailedToFetchBlock(block_number));
     };
 
     Ok(block.header.timestamp)
@@ -230,12 +233,20 @@ impl ScribeEventsProcessor {
 
     // Spawn the asynchronous task
     tokio::spawn(async move {
-      if let Err(e) = challenge_handler.start().await {
-        log::error!(
-          "ScribeEventsProcessor[{:?}] Error in challenge process: {:?}",
-          challenge_handler.address,
-          e
-        );
+      match challenge_handler.start().await {
+        Ok(()) => {
+          log::info!(
+            "ScribeEventsProcessor[{:?}] Challenge process completed successfully",
+            challenge_handler.address,
+          );
+        }
+        Err(e) => {
+          log::error!(
+            "ScribeEventsProcessor[{:?}] Error in challenge process: {:?}",
+            challenge_handler.address,
+            e
+          );
+        }
       }
     });
 
@@ -286,7 +297,7 @@ impl OpPokedChallengerProcess {
   }
 
   // TODO: refactor
-  pub async fn start(&self) -> Result<()> {
+  pub async fn start(&self) -> ProcessorResult<()> {
     // This checked for in tests, tests must be updated if log is changed
     log::debug!(
       "OpPokedValidator[{:?}] OpPoked validation started",
@@ -319,12 +330,10 @@ impl OpPokedChallengerProcess {
     }
   }
 
-  // TODO: need refactoring.
+  // TODO: need refactoring. need to add cancelation check
   // Perform the challenge process, first with flashbot provider, then with normal provider.
-  async fn do_challenge(&self) -> Result<FixedBytes<32>> {
-    // Perform the challenge after 200ms
-    let mut challenge_attempts: u64 = 0;
-    const RETRY_RANGE_END: u64 = CLASSIC_CHALLENGE_RETRY_COUNT + FLASHBOT_CHALLENGE_RETRY_COUNT;
+  async fn do_challenge(&self) -> ProcessorResult<TxHash> {
+    let mut challenge_attempts: u16 = 0;
 
     log::info!(
       "OpPokedValidator[{:?}] Challending data: {:?}",
@@ -332,85 +341,162 @@ impl OpPokedChallengerProcess {
       self.op_poked_event
     );
 
+    let contract_flashbot =
+      ScribeContractInstance::new(self.address, self.flashbot_provider.clone());
+    let contract = ScribeContractInstance::new(self.address, self.provider.clone());
+
     loop {
-      match challenge_attempts {
-        0..FLASHBOT_CHALLENGE_RETRY_COUNT => {
-          log::debug!(
-            "OpPokedValidator[{:?}] Attempting flashbot challenge",
-            self.address
-          );
-          let contract = ScribeContractInstance::new(self.address, self.flashbot_provider.clone());
+      tokio::select! {
+        _ = self.cancellation_token.cancelled() => {
+          log::debug!("OpPokedValidator[{:?}] Challenge cancelled", self.address);
 
-          let result = contract
-            .challenge(self.op_poked_event.schnorrData.clone(), GAS_LIMIT)
-            .await;
+          return Err(ProcessorError::ChallengeCancelled {
+            address: self.address,
+            attempt: challenge_attempts,
+          });
+        }
 
-          match result {
-            Ok(tx_hash) => {
-              log::info!(
-                "OpPokedValidator[{:?}] Flashbot transaction sent via flashbots RPC: {:?}",
-                self.address,
-                tx_hash
-              );
-
-              // Increment the challenge counter
-              metrics::inc_challenge_counter(self.address, true);
-              return Ok(tx_hash);
-            }
+        res = self.attempt_to_challenge(&contract_flashbot, &contract, challenge_attempts) => {
+          match res {
+            Ok(tx_hash) => return Ok(tx_hash),
+            // total attempts finished. challenge failed...
+            Err(ProcessorError::ChallengeAttemptsExhausted{address, attempt}) => {
+              return Err(ProcessorError::ChallengeAttemptsExhausted{address, attempt});
+            },
             Err(e) => {
               log::error!(
-                "OpPokedValidator[{:?}] Failed to send challenge transaction via flashbots: {:?}",
+                "OpPokedValidator[{:?}] Challenge attempt {} failed: {:?}",
                 self.address,
+                challenge_attempts,
                 e
               );
             }
           }
-        }
-        FLASHBOT_CHALLENGE_RETRY_COUNT..RETRY_RANGE_END => {
-          log::debug!(
-            "OpPokedValidator[{:?}] Attempting public challenge",
-            self.address
-          );
-          let contract = ScribeContractInstance::new(self.address, self.provider.clone());
-          match contract
-            .challenge(self.op_poked_event.schnorrData.clone(), GAS_LIMIT)
-            .await
-          {
-            Ok(tx_hash) => {
-              log::info!(
-                "OpPokedValidator[{:?}] Challenge transaction sent via public RPC: {:?}",
-                self.address,
-                tx_hash
-              );
-              // Increment the challenge counter
-              metrics::inc_challenge_counter(self.address, false);
-              return Ok(tx_hash);
-            }
-            Err(e) => {
-              log::error!(
-                "OpPokedValidator[{:?}] Failed to send challenge transaction via public RPC: {:?}",
-                self.address,
-                e
-              );
-            }
-          }
-        }
-        _ => {
-          log::error!(
-            "OpPokedValidator[{:?}] Challenge failed, total attempts {:?}",
-            self.address,
-            challenge_attempts
-          );
-          break;
         }
       }
+
       challenge_attempts += 1;
     }
+  }
 
-    bail!(
-      "OpPokedValidator[{:?}] Challenge failed, total attempts {:?}",
+  // Attempt to challenge the OpPoked event with flashbot provider first, then with normal provider.
+  // If the challenge is successful, return the transaction hash.
+  // If out of attempts, returns an error [ProcessorError::ChallengeFailed].
+  async fn attempt_to_challenge(
+    &self,
+    contract_flashbot: &ScribeContractInstance,
+    contract: &ScribeContractInstance,
+    challenge_attempts: u16,
+  ) -> ProcessorResult<TxHash> {
+    const RETRY_RANGE_END: u16 = CLASSIC_CHALLENGE_RETRY_COUNT + FLASHBOT_CHALLENGE_RETRY_COUNT;
+
+    log::debug!(
+      "OpPokedValidator[{:?}] Attempting challenge, attempt: {}",
       self.address,
       challenge_attempts
-    )
+    );
+    match challenge_attempts {
+      0..FLASHBOT_CHALLENGE_RETRY_COUNT => {
+        return self.challenge_with_flashbot(&contract_flashbot).await;
+      }
+      FLASHBOT_CHALLENGE_RETRY_COUNT..RETRY_RANGE_END => {
+        return self.challenge_with_public_rpc(&contract).await
+      }
+      _ => {
+        log::error!(
+          "OpPokedValidator[{:?}] Challenge failed, total attempts {:?}",
+          self.address,
+          challenge_attempts
+        );
+        Err(ProcessorError::ChallengeAttemptsExhausted {
+          address: self.address,
+          attempt: challenge_attempts,
+        })
+      }
+    }
+  }
+
+  // Challenge the OpPoked event with the flashbot provider.
+  // If the challenge is successful, return the transaction hash and updates prometheus metrics.
+  async fn challenge_with_flashbot(
+    &self,
+    contract: &ScribeContractInstance,
+  ) -> ProcessorResult<TxHash> {
+    log::debug!(
+      "OpPokedValidator[{:?}] Attempting flashbot challenge",
+      self.address
+    );
+
+    let result = contract
+      .challenge(self.op_poked_event.schnorrData.clone(), GAS_LIMIT)
+      .await;
+
+    match result {
+      Ok(tx_hash) => {
+        log::info!(
+          "OpPokedValidator[{:?}] Flashbot transaction sent via flashbots RPC: {:?}",
+          self.address,
+          tx_hash
+        );
+
+        // Increment the challenge counter
+        metrics::inc_challenge_counter(self.address, true);
+        Ok(tx_hash)
+      }
+      Err(e) => {
+        log::error!(
+          "OpPokedValidator[{:?}] Failed to send challenge transaction via flashbots: {:?}",
+          self.address,
+          e
+        );
+
+        Err(ProcessorError::ChallengeError {
+          address: self.address,
+          source: e,
+        })
+      }
+    }
+  }
+
+  // Challenge the OpPoked event with the public provider.
+  // If the challenge is successful, return the transaction hash and updates prometheus metrics.
+  async fn challenge_with_public_rpc(
+    &self,
+    contract: &ScribeContractInstance,
+  ) -> ProcessorResult<TxHash> {
+    log::debug!(
+      "OpPokedValidator[{:?}] Attempting public challenge",
+      self.address
+    );
+
+    let result = contract
+      .challenge(self.op_poked_event.schnorrData.clone(), GAS_LIMIT)
+      .await;
+
+    match result {
+      Ok(tx_hash) => {
+        log::info!(
+          "OpPokedValidator[{:?}] Challenge transaction sent via public RPC: {:?}",
+          self.address,
+          tx_hash
+        );
+
+        // Increment the challenge counter
+        metrics::inc_challenge_counter(self.address, false);
+        Ok(tx_hash)
+      }
+      Err(e) => {
+        log::error!(
+          "OpPokedValidator[{:?}] Failed to send challenge transaction via public RPC: {:?}",
+          self.address,
+          e
+        );
+
+        Err(ProcessorError::ChallengeError {
+          address: self.address,
+          source: e,
+        })
+      }
+    }
   }
 }

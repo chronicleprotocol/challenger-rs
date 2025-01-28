@@ -20,8 +20,7 @@ use alloy::{
   primitives::Address,
   providers::{
     fillers::{
-      BlobGasFiller, CachedNonceManager, ChainIdFiller, FillProvider, GasFiller, JoinFill,
-      NonceFiller, WalletFiller,
+      BlobGasFiller, ChainIdFiller, FillProvider, GasFiller, JoinFill, NonceFiller, WalletFiller,
     },
     Identity, Provider, RootProvider, WalletProvider,
   },
@@ -50,13 +49,10 @@ pub type RetryProviderWithSigner = FillProvider<
   JoinFill<
     JoinFill<
       JoinFill<
-        JoinFill<
-          Identity,
-          JoinFill<GasFiller, JoinFill<BlobGasFiller, JoinFill<NonceFiller, ChainIdFiller>>>,
-        >,
-        ChainIdFiller,
+        Identity,
+        JoinFill<GasFiller, JoinFill<BlobGasFiller, JoinFill<NonceFiller, ChainIdFiller>>>,
       >,
-      NonceFiller<CachedNonceManager>,
+      ChainIdFiller,
     >,
     WalletFiller<EthereumWallet>,
   >,
@@ -87,6 +83,7 @@ impl Poller {
     cancellation_token: CancellationToken,
     provider: Arc<RetryProviderWithSigner>,
     poll_interval_seconds: u64,
+    from_block: Option<u64>,
   ) -> Self {
     Self {
       addresses: handler_channels.keys().cloned().collect(),
@@ -94,7 +91,7 @@ impl Poller {
       provider,
       handler_channels,
       poll_interval_seconds,
-      last_processes_block: 0,
+      last_processes_block: from_block.unwrap_or(0),
       retry_count: 0,
     }
   }
@@ -134,7 +131,7 @@ impl Poller {
 
   // Poll for new events in block range `self.last_processes_block..latest_block`
   async fn poll(&mut self) -> Result<()> {
-    log::trace!("Poller: polling for new events");
+    log::trace!("Poller: Polling for new events");
     // Get latest block number
     let latest_block = self.provider.get_block_number().await?;
     if self.last_processes_block == 0 {
@@ -144,7 +141,7 @@ impl Poller {
 
     if latest_block <= self.last_processes_block {
       log::warn!(
-        "Poller: latest block {:?} is not greater than last processed block {:?}",
+        "Poller: Latest block {:?} is not greater than last processed block {:?}",
         latest_block,
         self.last_processes_block
       );
@@ -177,18 +174,16 @@ impl Poller {
                   &event.address()
                 );
                 // Send event to the channel
-                match self.handler_channels.get(&event.address()) {
-                  Some(tx) => {
-                    tx.send(event).await?;
-                  }
-                  None => {
-                    log::error!(
-                      "Poller: No channel found for address {:?}, skipping",
-                      &event.address()
-                    );
-                    continue;
-                  }
-                }
+                let Some(tx) = self.handler_channels.get(&event.address()) else {
+                  // TODO: should never happen
+                  log::error!(
+                    "Poller: No channel found for address {:?}, skipping",
+                    &event.address()
+                  );
+                  continue;
+                };
+
+                tx.send(event).await?;
               }
               Err(e) => {
                 log::error!("Poller: Failed to parse log: {:?}", e);
@@ -198,7 +193,6 @@ impl Poller {
           }
         }
         Err(e) => {
-          // TODO: retry?
           bail!("Poller: Failed to query logs: {:?}", e);
         }
       }
@@ -206,7 +200,8 @@ impl Poller {
 
     // Reset retry count, or might be issues
     self.retry_count = 0;
-    self.last_processes_block = latest_block;
+    // +1 because we don't need to get data from same block twice
+    self.last_processes_block = latest_block + 1;
     // Updating last scanned block metric
     metrics::set_last_scanned_block(self.provider.default_signer_address(), latest_block as i64);
 
