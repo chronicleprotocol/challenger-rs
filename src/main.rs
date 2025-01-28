@@ -15,10 +15,7 @@
 
 use alloy::{
   primitives::Address,
-  providers::{
-    fillers::{CachedNonceManager, ChainIdFiller, NonceFiller},
-    ProviderBuilder,
-  },
+  providers::{fillers::ChainIdFiller, ProviderBuilder},
   rpc::client::ClientBuilder,
   transports::layers::RetryBackoffLayer,
 };
@@ -91,6 +88,9 @@ struct Cli {
     help = "If no chain_id provided binary will try to get chain_id from given RPC"
   )]
   chain_id: Option<u64>,
+
+  #[arg(long, help = "Block number to start from")]
+  from_block: Option<u64>,
 }
 
 impl PrivateKeyWallet for Cli {
@@ -133,7 +133,7 @@ async fn main() -> Result<()> {
     "Using {:?} for signing transactions.",
     signer.default_signer().address()
   );
-  let nonce_manager = NonceFiller::<CachedNonceManager>::default();
+  // let nonce_manager = NonceFiller::<SimpleNonceManager>::default();
 
   // Create new HTTP client with retry backoff layer
   let client = ClientBuilder::default()
@@ -146,7 +146,7 @@ async fn main() -> Result<()> {
       .with_recommended_fillers()
       // Add chain id request from rpc
       .filler(ChainIdFiller::new(args.chain_id))
-      .filler(nonce_manager.clone())
+      // .filler(nonce_manager.clone())
       // Add default signer
       .wallet(signer.clone())
       .on_client(client),
@@ -164,7 +164,7 @@ async fn main() -> Result<()> {
       .with_recommended_fillers()
       // Add chain id request from rpc
       .filler(ChainIdFiller::new(args.chain_id))
-      .filler(nonce_manager.clone())
+      // .filler(nonce_manager.clone())
       // Add default signer
       .wallet(signer.clone())
       .on_client(flashbot_client),
@@ -209,33 +209,35 @@ async fn main() -> Result<()> {
   let mut processors: HashMap<Address, Sender<Event>> = HashMap::new();
 
   for address in addresses.iter() {
-    // Create event distributor
-    let (mut event_distributor, tx) = ScribeEventsProcessor::new(
+    // Create event processor for each address
+    let (mut event_processor, tx) = ScribeEventsProcessor::new(
       address.clone(),
       provider.clone(),
       flashbot_provider.clone(),
       cancellation_token.clone(),
     );
-    let processor_address = address.clone();
+
     // Run event distributor process
     set.spawn(async move {
-      if let Err(err) = event_distributor.start().await {
-        panic!(
-          "Failed to start event processor for {:?} error: {:?}",
-          processor_address, err
-        );
-      }
+      event_processor.start().await;
     });
+
     // Storing event processor channel to send events to it.
     processors.insert(address.clone(), tx);
   }
 
   // Create events listener
-  let mut poller = Poller::new(processors, cancellation_token.clone(), provider.clone(), 30);
+  let mut poller = Poller::new(
+    processors,
+    cancellation_token.clone(),
+    provider.clone(),
+    30,
+    args.from_block,
+  );
 
   // Run events listener process
   set.spawn(async move {
-    log::info!("Starting events listener");
+    log::info!("Starting events poller");
     if let Err(err) = poller.start().await {
       log::error!("Poller error: {:?}", err);
     }
@@ -307,6 +309,7 @@ mod tests {
       password_file: None,
       rpc_url: "http://localhost:8545".to_string(),
       flashbot_rpc_url: "http://localhost:8545".to_string(),
+      from_block: None,
     };
 
     let wallet = cli.wallet().unwrap().unwrap();
@@ -328,6 +331,7 @@ mod tests {
       password_file: None,
       rpc_url: "http://localhost:8545".to_string(),
       flashbot_rpc_url: "http://localhost:8545".to_string(),
+      from_block: None,
     };
 
     let wallet = cli.wallet().unwrap().unwrap();
@@ -356,6 +360,7 @@ mod tests {
       password_file: Some(keystore_password_file),
       rpc_url: "http://localhost:8545".to_string(),
       flashbot_rpc_url: "http://localhost:8545".to_string(),
+      from_block: None,
     };
 
     let wallet = cli.wallet().unwrap().unwrap();
@@ -381,6 +386,7 @@ mod tests {
       password_file: None,
       rpc_url: "http://localhost:8545".to_string(),
       flashbot_rpc_url: "http://localhost:8545".to_string(),
+      from_block: None,
     };
 
     let wallet = cli.wallet().unwrap().unwrap();

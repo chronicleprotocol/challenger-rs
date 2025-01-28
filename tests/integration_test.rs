@@ -1,5 +1,5 @@
 use core::panic;
-use std::{cell::Cell, sync::Arc, time::Duration, vec};
+use std::{cell::Cell, collections::HashMap, sync::Arc, time::Duration, vec};
 
 use alloy::{
   hex,
@@ -23,11 +23,11 @@ use alloy::{
   },
 };
 use futures_util::future::join_all;
-use scribe::Poller;
+use scribe::{Event, Poller, ScribeEventsProcessor};
 use scribe_optimistic::{
   IScribe, LibSecp256k1, ScribeOptimistic, ScribeOptimistic::ScribeOptimisticInstance,
 };
-use tokio::task::JoinSet;
+use tokio::{sync::mpsc::Sender, task::JoinSet};
 use tokio_util::sync::CancellationToken;
 
 // In a separate module due to problems with autoformatter
@@ -323,7 +323,7 @@ async fn dont_challenge_outside_challenge_period() {
         found |= log
           .body
           .to_lowercase()
-          .contains(&"OpPoked received outside of challenge period".to_lowercase());
+          .contains(&"outside of challenge period".to_lowercase());
       }
       success.set(found);
     });
@@ -476,13 +476,10 @@ async fn start_event_listener(
     .layer(RetryBackoffLayer::new(15, 200, 300))
     .http(url);
 
-  let nonce_manager = NonceFiller::<CachedNonceManager>::default();
-
   let provider = Arc::new(
     ProviderBuilder::new()
       .with_recommended_fillers()
       .filler(ChainIdFiller::new(Some(31337)))
-      .filler(nonce_manager.clone())
       .wallet(signer.clone())
       .on_client(client),
   );
@@ -490,41 +487,32 @@ async fn start_event_listener(
   let flashbot_provider = provider.clone();
 
   let mut set: JoinSet<()> = JoinSet::new();
-  let (tx, rx) = tokio::sync::mpsc::channel::<EventWithMetadata>(100);
-
   // let addresses = vec![scribe_optimistic.address().clone()];
+  let mut processors: HashMap<Address, Sender<Event>> = HashMap::new();
 
+  for address in addresses.iter() {
+    let (mut event_distributor, tx) = ScribeEventsProcessor::new(
+      address.clone(),
+      provider.clone(),
+      flashbot_provider.clone(),
+      cancel_token.clone(),
+    );
+
+    // Run event distributor process
+    set.spawn(async move {
+      event_distributor.start().await;
+    });
+    // Storing event processor channel to send events to it.
+    processors.insert(address.clone(), tx);
+  }
   // Create events listener
-  let mut poller = Poller::new(
-    addresses.clone(),
-    cancel_token.clone(),
-    provider.clone(),
-    tx.clone(),
-    1,
-  );
-
-  // Create event distributor
-  let mut event_distributor = EventDistributor::new(
-    addresses.clone(),
-    cancel_token.clone(),
-    provider.clone(),
-    flashbot_provider.clone(),
-    rx,
-  );
+  let mut poller = Poller::new(processors, cancel_token.clone(), provider.clone(), 1, None);
 
   // Run events listener process
   set.spawn(async move {
     log::info!("Starting events listener");
     if let Err(err) = poller.start().await {
       log::error!("Poller error: {:?}", err);
-    }
-  });
-
-  // Run event distributor process
-  set.spawn(async move {
-    log::info!("Starting log handler");
-    if let Err(err) = event_distributor.start().await {
-      log::error!("Log Handler error: {:?}", err);
     }
   });
 

@@ -16,14 +16,15 @@
 use alloy::{
   primitives::{Address, TxHash},
   providers::PendingTransactionError,
+  transports::{RpcError, TransportErrorKind},
 };
 
 /// Dynamic contract result type.
-pub type Result<T, E = Error> = core::result::Result<T, E>;
+pub type ContractResult<T, E = ContractError> = core::result::Result<T, E>;
 
 /// Error when interacting with Scribe library.
 #[derive(thiserror::Error, Debug)]
-pub enum Error {
+pub enum ContractError {
   /// Failed to parse event from log, no `topic0` exist.
   #[error("missing `topic0` from log under tx {tx_hash:?} for address {address:?}")]
   Topic0MissingForLog {
@@ -58,8 +59,36 @@ pub enum Error {
     #[source]
     source: PendingTransactionError,
   },
+}
 
-  /// Any unknown error
-  #[error("unknown error happened")]
-  Unknown,
+/// Dynamic event processor result type.
+pub type ProcessorResult<T, E = ProcessorError> = core::result::Result<T, E>;
+
+/// Error when processing events.
+#[derive(thiserror::Error, Debug)]
+pub enum ProcessorError {
+  #[error("contract execution failed with error: {0}")]
+  ContractError(#[from] ContractError),
+
+  #[error("RPC transport error: {0}")]
+  RpcError(#[from] RpcError<TransportErrorKind>),
+
+  #[error("missing block number in log for transaction {0:?}")]
+  NoBlockNumberInLog(Option<TxHash>),
+
+  #[error("failed to fetch block with number {0}")]
+  FailedToFetchBlock(u64),
+
+  #[error("failed to execute challenge on address {address:?}: {source}")]
+  ChallengeError {
+    address: Address,
+    #[source]
+    source: ContractError,
+  },
+
+  #[error("address {address:?} has exhausted all {attempt} attempts to challenge OpPoke")]
+  ChallengeAttemptsExhausted { address: Address, attempt: u16 },
+
+  #[error("address {address:?} challenge cancelled after attempt: {attempt}")]
+  ChallengeCancelled { address: Address, attempt: u16 },
 }

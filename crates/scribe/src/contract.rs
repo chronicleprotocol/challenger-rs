@@ -13,7 +13,7 @@
 //  You should have received a copy of the GNU Affero General Public License
 //  along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{fmt::Debug, sync::Arc};
+use std::{fmt::Debug, sync::Arc, time::Duration};
 
 use alloy::{
   primitives::{Address, FixedBytes},
@@ -26,7 +26,7 @@ use alloy::{
 // use eyre::{bail, Result, WrapErr};
 
 use crate::{
-  error::{Error, Result},
+  error::{ContractError, ContractResult},
   RetryProviderWithSigner,
 };
 use IScribe::SchnorrData;
@@ -41,6 +41,9 @@ sol! {
   "abi/ScribeOptimistic.json"
 }
 
+// Confirmation timeout for the transaction
+const TIMEOUT: Duration = Duration::from_secs(30);
+
 /// The RPC transport type used to interact with the Ethereum network.
 pub type RpcTransportWithRetry = RetryBackoffService<Http<Client>>;
 
@@ -49,14 +52,18 @@ pub type RpcTransportWithRetry = RetryBackoffService<Http<Client>>;
 pub(crate) trait ScribeContract {
   /// Returns challenge period from ScribeOptimistic smart contract deployed to `address`.
   /// NOTE: From time to time challenger might need to refresh this value, because it might be changed by the contract owner.
-  async fn get_challenge_period(&self) -> Result<u16>;
+  async fn get_challenge_period(&self) -> ContractResult<u16>;
 
   /// Returns true if schnorr signature of given `OpPoked` event is valid.
-  async fn is_signature_valid(&self, op_poked: ScribeOptimistic::OpPoked) -> Result<bool>;
+  async fn is_signature_valid(&self, op_poked: ScribeOptimistic::OpPoked) -> ContractResult<bool>;
 
   /// Challenges given `OpPoked` event with given `schnorr_data`.
   /// See: `IScribeOptimistic::opChallenge(SchnorrData calldata schnorrData)` for more details.
-  async fn challenge(&self, schnorr_data: SchnorrData, gas_limit: u64) -> Result<FixedBytes<32>>;
+  async fn challenge(
+    &self,
+    schnorr_data: SchnorrData,
+    gas_limit: u64,
+  ) -> ContractResult<FixedBytes<32>>;
 
   /// Returns the address of the contract.
   fn address(&self) -> &Address;
@@ -81,14 +88,14 @@ impl ScribeContractInstance {
 
 impl ScribeContract for ScribeContractInstance {
   /// Returns challenge period from ScribeOptimistic smart contract deployed to `address`.
-  async fn get_challenge_period(&self) -> Result<u16> {
+  async fn get_challenge_period(&self) -> ContractResult<u16> {
     Ok(
       self
         .contract
         .opChallengePeriod()
         .call()
         .await
-        .map_err(|e| Error::AlloyContractError {
+        .map_err(|e| ContractError::AlloyContractError {
           address: self.address().clone(),
           source: e,
         })?
@@ -99,15 +106,18 @@ impl ScribeContract for ScribeContractInstance {
   /// Validates schnorr signature from given `OpPoked`.
   /// Uses `constructPokeMessage` and `isAcceptableSchnorrSignatureNow` methods from the contract.
   /// Returns true if the signature is valid.
-  async fn is_signature_valid(&self, op_poked: ScribeOptimistic::OpPoked) -> Result<bool> {
-    log::trace!("Contract {:?}: Validating OpPoke signature", self.address());
+  async fn is_signature_valid(&self, op_poked: ScribeOptimistic::OpPoked) -> ContractResult<bool> {
+    log::trace!(
+      "Contract[{:?}]: Validating OpPoke signature",
+      self.address()
+    );
 
     let message = self
       .contract
       .constructPokeMessage(op_poked.pokeData)
       .call()
       .await
-      .map_err(|e| Error::AlloyContractError {
+      .map_err(|e| ContractError::AlloyContractError {
         address: self.address().clone(),
         source: e,
       })?
@@ -118,7 +128,7 @@ impl ScribeContract for ScribeContractInstance {
       .isAcceptableSchnorrSignatureNow(message, op_poked.schnorrData)
       .call()
       .await
-      .map_err(|e| Error::AlloyContractError {
+      .map_err(|e| ContractError::AlloyContractError {
         address: self.address().clone(),
         source: e,
       })?
@@ -129,9 +139,13 @@ impl ScribeContract for ScribeContractInstance {
 
   /// Challenges given `OpPoked` event with given `schnorr_data`.
   /// Executes `opChallenge` method on the contract and returns transaction hash if everything worked well.
-  async fn challenge(&self, schnorr_data: SchnorrData, gas_limit: u64) -> Result<FixedBytes<32>> {
-    log::warn!(
-      "Contract {:?}: Challenging OpPoke with schnorr_data {:?}",
+  async fn challenge(
+    &self,
+    schnorr_data: SchnorrData,
+    gas_limit: u64,
+  ) -> ContractResult<FixedBytes<32>> {
+    log::debug!(
+      "Contract[{:?}]: Challenging OpPoke with schnorr_data {:?}",
       self.address(),
       &schnorr_data
     );
@@ -142,16 +156,19 @@ impl ScribeContract for ScribeContractInstance {
       // TODO: set gas limit properly
       .gas(gas_limit);
 
-    let tx_hash = transaction
+    let tx = transaction
       .send()
       .await
-      .map_err(|e| Error::AlloyContractError {
+      .map_err(|e| ContractError::AlloyContractError {
         address: self.address().clone(),
         source: e,
       })?
+      .with_timeout(Some(TIMEOUT));
+
+    let tx_hash = tx
       .watch()
       .await
-      .map_err(|e| Error::PendingTransactionError {
+      .map_err(|e| ContractError::PendingTransactionError {
         address: self.address().clone(),
         source: e,
       })?;
