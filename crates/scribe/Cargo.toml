@@ -6,7 +6,6 @@ edition = "2021"
 [dependencies]
 alloy = { workspace = true, features = ["full"] }
 chrono = { workspace = true }
-eyre = { workspace = true }
 log = { workspace = true }
 metrics = { workspace = true }
 tokio = { workspace = true, features = ["full"] }

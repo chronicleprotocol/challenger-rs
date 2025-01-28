@@ -31,12 +31,12 @@ use alloy::{
     layers::RetryBackoffService,
   },
 };
-use eyre::{bail, Context, Result};
 use tokio::{select, sync::mpsc::Sender};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
   contract::ScribeOptimistic::{OpPokeChallengedSuccessfully, OpPoked},
+  error::{PollerError, PollerResult},
   metrics, Event,
 };
 
@@ -105,7 +105,7 @@ impl Poller {
     chunk: Vec<Address>,
     from_block: u64,
     to_block: u64,
-  ) -> Result<Vec<Log>> {
+  ) -> PollerResult<Vec<Log>> {
     let filter = Filter::new()
       .address(chunk.to_vec())
       .from_block(from_block)
@@ -122,15 +122,11 @@ impl Poller {
       &chunk
     );
 
-    self
-      .provider
-      .get_logs(&filter)
-      .await
-      .wrap_err_with(|| format!("Failed to get logs for addresses: {:?}", chunk))
+    Ok(self.provider.get_logs(&filter).await?)
   }
 
   // Poll for new events in block range `self.last_processes_block..latest_block`
-  async fn poll(&mut self) -> Result<()> {
+  async fn poll(&mut self) -> PollerResult<()> {
     log::trace!("Poller: Polling for new events");
     // Get latest block number
     let latest_block = self.provider.get_block_number().await?;
@@ -155,46 +151,38 @@ impl Poller {
           self.last_processes_block, // unwrap is safe because we checked it in the beginning
           latest_block,
         )
-        .await;
+        .await?;
 
-      match logs {
-        Ok(logs) => {
-          log::debug!(
-            "Poller: Received {} logs for chunk [{:?}]",
-            logs.len(),
-            chunk
-          );
+      log::debug!(
+        "Poller: Received {} logs for chunk [{:?}]",
+        logs.len(),
+        chunk
+      );
 
-          for log in logs {
-            match Event::try_from(log) {
-              Ok(event) => {
-                log::debug!(
-                  "Poller: {} received for address {:?} processing",
-                  event.title(),
-                  &event.address()
-                );
-                // Send event to the channel
-                let Some(tx) = self.handler_channels.get(&event.address()) else {
-                  // TODO: should never happen
-                  log::error!(
-                    "Poller: No channel found for address {:?}, skipping",
-                    &event.address()
-                  );
-                  continue;
-                };
-
-                tx.send(event).await?;
-              }
-              Err(e) => {
-                log::error!("Poller: Failed to parse log: {:?}", e);
-                continue;
-              }
+      for log in logs {
+        match Event::try_from(log) {
+          Ok(event) => {
+            log::debug!(
+              "Poller: {} received for address {:?} processing",
+              event.title(),
+              &event.address()
+            );
+            // Send event to the channel
+            let Some(tx) = self.handler_channels.get(&event.address()) else {
+              // TODO: should never happen
+              panic!(
+                "Poller: No channel found for address {:?}, skipping",
+                &event.address()
+              );
             };
+
+            tx.send(event).await?;
           }
-        }
-        Err(e) => {
-          bail!("Poller: Failed to query logs: {:?}", e);
-        }
+          Err(e) => {
+            log::error!("Poller: Failed to parse log: {:?}", e);
+            continue;
+          }
+        };
       }
     }
 
@@ -209,7 +197,7 @@ impl Poller {
   }
 
   /// Start the event listener
-  pub async fn start(&mut self) -> Result<()> {
+  pub async fn start(&mut self) -> PollerResult<()> {
     log::info!("Poller: Starting polling events from RPC...");
 
     loop {
@@ -227,7 +215,7 @@ impl Poller {
                           MAX_RETRY_COUNT,
                           err
                       );
-                      return Err(err);
+                      return Err(PollerError::MaxRetryAttemptsExceeded(MAX_RETRY_COUNT));
                   }
 
                   self.retry_count += 1;

@@ -18,6 +18,9 @@ use alloy::{
   providers::PendingTransactionError,
   transports::{RpcError, TransportErrorKind},
 };
+use tokio::sync::mpsc::error::SendError;
+
+use crate::Event;
 
 /// Dynamic contract result type.
 pub type ContractResult<T, E = ContractError> = core::result::Result<T, E>;
@@ -91,4 +94,20 @@ pub enum ProcessorError {
 
   #[error("address {address:?} challenge cancelled after attempt: {attempt}")]
   ChallengeCancelled { address: Address, attempt: u16 },
+}
+
+/// Dynamic event polling result type.
+pub type PollerResult<T, E = PollerError> = core::result::Result<T, E>;
+
+/// Error when polling events from chain.
+#[derive(thiserror::Error, Debug)]
+pub enum PollerError {
+  #[error("RPC transport error: {0}")]
+  RpcError(#[from] RpcError<TransportErrorKind>),
+
+  #[error("failed to send event to handler: {0}")]
+  EventSendError(#[from] SendError<Event>),
+
+  #[error("maximum retry attempts of {0} exceeded")]
+  MaxRetryAttemptsExceeded(u16),
 }
