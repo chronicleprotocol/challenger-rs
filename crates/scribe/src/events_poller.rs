@@ -13,7 +13,7 @@
 //  You should have received a copy of the GNU Affero General Public License
 //  along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use alloy::{
   network::{Ethereum, EthereumWallet},
@@ -37,19 +37,13 @@ use tokio::{select, sync::mpsc::Sender};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-  contract::{
-    EventWithMetadata,
-    ScribeOptimistic::{OpPokeChallengedSuccessfully, OpPoked},
-  },
-  metrics,
+  contract::ScribeOptimistic::{OpPokeChallengedSuccessfully, OpPoked},
+  metrics, Event,
 };
 
 // const POLL_INTERVAL_SEC: u64 = 30;
 const MAX_ADDRESS_PER_REQUEST: usize = 50;
 const MAX_RETRY_COUNT: u16 = 5;
-
-/// The provider type used to interact with the Ethereum network.
-pub type RpcRetryProvider = RetryBackoffService<Http<Client>>;
 
 /// The provider type used to interact with the Ethereum network with a signer.
 pub type RetryProviderWithSigner = FillProvider<
@@ -79,33 +73,36 @@ pub type RetryProviderWithSigner = FillProvider<
 #[derive(Debug, Clone)]
 pub struct Poller {
   addresses: Vec<Address>,
-  cancelation_token: CancellationToken,
-  provider: Arc<RetryProviderWithSigner>,
-  last_processes_block: Option<u64>,
-  tx: Sender<EventWithMetadata>,
+  cancellation_token: CancellationToken,
+  handler_channels: HashMap<Address, Sender<Event>>,
+  last_processes_block: u64,
   poll_interval_seconds: u64,
+  provider: Arc<RetryProviderWithSigner>,
   retry_count: u16,
 }
 
 impl Poller {
   pub fn new(
-    addresses: Vec<Address>,
-    cancelation_token: CancellationToken,
+    handler_channels: HashMap<Address, Sender<Event>>,
+    cancellation_token: CancellationToken,
     provider: Arc<RetryProviderWithSigner>,
-    tx: Sender<EventWithMetadata>,
     poll_interval_seconds: u64,
   ) -> Self {
     Self {
-      addresses,
-      cancelation_token,
+      addresses: handler_channels.keys().cloned().collect(),
+      cancellation_token,
       provider,
-      tx,
-      last_processes_block: None,
+      handler_channels,
       poll_interval_seconds,
+      last_processes_block: 0,
       retry_count: 0,
     }
   }
 
+  // Loads list of logs with filters:
+  // - address (set of addresses to get events from)
+  // - from_block, to_block
+  // - events_signature (checks by topics, need only `OpPoked` and `OpPokeChallengedSuccessfully`
   async fn query_logs(
     &self,
     chunk: Vec<Address>,
@@ -121,7 +118,12 @@ impl Poller {
         OpPokeChallengedSuccessfully::SIGNATURE_HASH,
       ]);
 
-    log::trace!("Poller: [{:?}] Getting for new events", &chunk);
+    log::trace!(
+      "Poller: Polling for new events from {} to {} for addresses [{:?}]",
+      &from_block,
+      &to_block,
+      &chunk
+    );
 
     self
       .provider
@@ -135,12 +137,12 @@ impl Poller {
     log::trace!("Poller: polling for new events");
     // Get latest block number
     let latest_block = self.provider.get_block_number().await?;
-    if self.last_processes_block.is_none() {
+    if self.last_processes_block == 0 {
       log::info!("Poller: First run, setting last processed block to latest block");
-      self.last_processes_block = Some(latest_block);
+      self.last_processes_block = latest_block;
     }
-    // TODO remove this line
-    if latest_block <= self.last_processes_block.unwrap_or(0) {
+
+    if latest_block <= self.last_processes_block {
       log::warn!(
         "Poller: latest block {:?} is not greater than last processed block {:?}",
         latest_block,
@@ -153,27 +155,43 @@ impl Poller {
       let logs = self
         .query_logs(
           chunk.to_vec(),
-          self.last_processes_block.unwrap(), // unwrap is safe because we checked it in the beginning
+          self.last_processes_block, // unwrap is safe because we checked it in the beginning
           latest_block,
         )
         .await;
 
       match logs {
         Ok(logs) => {
-          log::debug!("Poller: [{:?}] Received {} logs", chunk, logs.len());
+          log::debug!(
+            "Poller: Received {} logs for chunk [{:?}]",
+            logs.len(),
+            chunk
+          );
+
           for log in logs {
-            match EventWithMetadata::from_log(log) {
+            match Event::try_from(log) {
               Ok(event) => {
                 log::debug!(
-                  "Poller: [{:?}] Event received for address {:?} processing",
-                  chunk,
-                  &event.address
+                  "Poller: {} received for address {:?} processing",
+                  event.title(),
+                  &event.address()
                 );
                 // Send event to the channel
-                self.tx.send(event).await?;
+                match self.handler_channels.get(&event.address()) {
+                  Some(tx) => {
+                    tx.send(event).await?;
+                  }
+                  None => {
+                    log::error!(
+                      "Poller: No channel found for address {:?}, skipping",
+                      &event.address()
+                    );
+                    continue;
+                  }
+                }
               }
               Err(e) => {
-                log::error!("Poller: [{:?}] Failed to parse log: {:?}", chunk, e);
+                log::error!("Poller: Failed to parse log: {:?}", e);
                 continue;
               }
             };
@@ -188,7 +206,7 @@ impl Poller {
 
     // Reset retry count, or might be issues
     self.retry_count = 0;
-    self.last_processes_block = Some(latest_block);
+    self.last_processes_block = latest_block;
     // Updating last scanned block metric
     metrics::set_last_scanned_block(self.provider.default_signer_address(), latest_block as i64);
 
@@ -201,7 +219,7 @@ impl Poller {
 
     loop {
       select! {
-          _ = self.cancelation_token.cancelled() => {
+          _ = self.cancellation_token.cancelled() => {
               log::info!("Poller: got cancel signal, terminating...");
               return Ok(());
           }
