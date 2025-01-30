@@ -206,7 +206,7 @@ impl Poller {
               return Ok(());
           }
           _ = tokio::time::sleep(Duration::from_secs(self.poll_interval_seconds)) => {
-              log::info!("Poller: Executing tick for events listener...");
+              log::trace!("Poller: Executing tick for events listener...");
               if let Err(err) = self.poll().await {
                   if self.retry_count >= MAX_RETRY_COUNT {
                       log::error!(
