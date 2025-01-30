@@ -209,14 +209,11 @@ async fn main() -> Result<()> {
   let mut processors: HashMap<Address, Sender<Event>> = HashMap::new();
 
   for address in addresses.iter() {
-    let scribe_contract = ScribeContractInstance::new(
-      address.clone(),
-      provider.clone(),
-      Some(flashbot_provider.clone()),
-    );
+    let scribe_contract =
+      ScribeContractInstance::new(*address, provider.clone(), Some(flashbot_provider.clone()));
     // Create event processor for each address
     let (mut event_processor, tx) =
-      ScribeEventsProcessor::new(address.clone(), scribe_contract, cancellation_token.clone());
+      ScribeEventsProcessor::new(*address, scribe_contract, cancellation_token.clone());
 
     // Run event distributor process
     set.spawn(async move {
@@ -224,7 +221,7 @@ async fn main() -> Result<()> {
     });
 
     // Storing event processor channel to send events to it.
-    processors.insert(address.clone(), tx);
+    processors.insert(*address, tx);
   }
 
   // Create events listener

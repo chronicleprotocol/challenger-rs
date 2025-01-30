@@ -109,7 +109,7 @@ impl ScribeContractInstance {
   async fn challenge_with_private(&self, schnorr_data: &SchnorrData) -> ContractResult<TxHash> {
     let Some(private_provider) = self.private_provider.clone() else {
       return Err(ContractError::MissingPrivateProvider {
-        address: self.address().clone(),
+        address: *self.address(),
       });
     };
 
@@ -130,7 +130,7 @@ impl ScribeContractInstance {
 
     let Some(envelop) = sendable.as_envelope() else {
       return Err(ContractError::PrivateTransactionBuildError {
-        address: self.address().clone(),
+        address: *self.address(),
       });
     };
     let tx = envelop.encoded_2718();
@@ -150,7 +150,7 @@ impl ScribeContractInstance {
       .watch()
       .await
       .map_err(|e| ContractError::PendingTransactionError {
-        address: self.address().clone(),
+        address: *self.address(),
         source: e,
       })?;
 
@@ -174,14 +174,14 @@ impl ScribeContractInstance {
       .send()
       .await
       .map_err(|e| ContractError::AlloyContractError {
-        address: self.address().clone(),
+        address: *self.address(),
         source: e,
       })?
       .with_timeout(Some(TX_CONFIRMATION_TIMEOUT))
       .watch()
       .await
       .map_err(|e| ContractError::PendingTransactionError {
-        address: self.address().clone(),
+        address: *self.address(),
         source: e,
       })?;
 
@@ -203,7 +203,7 @@ impl ScribeContractInstance {
       .call()
       .await
       .map_err(|e| ContractError::AlloyContractError {
-        address: self.address().clone(),
+        address: *self.address(),
         source: e,
       })?
       ._0;
@@ -214,7 +214,7 @@ impl ScribeContractInstance {
       .call()
       .await
       .map_err(|e| ContractError::AlloyContractError {
-        address: self.address().clone(),
+        address: *self.address(),
         source: e,
       })?
       ._0;
@@ -285,7 +285,7 @@ impl ScribeContract for ScribeContractInstance {
         .call()
         .await
         .map_err(|e| ContractError::AlloyContractError {
-          address: self.address().clone(),
+          address: *self.address(),
           source: e,
         })?
         ._0,
@@ -317,7 +317,7 @@ impl ScribeContract for ScribeContractInstance {
       self.address()
     );
 
-    Ok(self.challenge_with_public(&schnorr_data).await?)
+    self.challenge_with_public(&schnorr_data).await
   }
 
   /// Returns true if given `OpPoked` event is challengeable.
@@ -326,7 +326,7 @@ impl ScribeContract for ScribeContractInstance {
     op_poked_log: &Log<ScribeOptimistic::OpPoked>,
     challenge_period: u64,
   ) -> ContractResult<bool> {
-    if self.is_log_stale(&op_poked_log, challenge_period).await? {
+    if self.is_log_stale(op_poked_log, challenge_period).await? {
       log::trace!(
         "Contract[{:?}]: OpPoke is stale, skipping challenge",
         self.address()

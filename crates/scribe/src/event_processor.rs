@@ -194,7 +194,7 @@ impl<C: ScribeContract> ScribeEventsProcessor<C> {
           match contract.challenge(schnorr_data).await {
             Ok(tx_hash) => {
               // Increment the challenge counter
-              metrics::inc_challenge_counter(contract.address().clone());
+              metrics::inc_challenge_counter(*contract.address());
 
               log::debug!(
                 "ScribeEventsProcessor[{:?}] OpPoked event challenged successfully, tx_hash: {:?}",
