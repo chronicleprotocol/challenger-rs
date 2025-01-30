@@ -17,7 +17,7 @@ use alloy::{
   primitives::Address,
   providers::{fillers::ChainIdFiller, ProviderBuilder},
   rpc::client::ClientBuilder,
-  transports::layers::RetryBackoffLayer,
+  transports::{http::Client, layers::RetryBackoffLayer},
 };
 use clap::Parser;
 use env_logger::Env;
@@ -25,7 +25,7 @@ use eyre::Result;
 use log::{error, info};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use metrics_process::Collector;
-use scribe::{metrics, Event, Poller, ScribeEventsProcessor};
+use scribe::{contract::ScribeContractInstance, metrics, Event, Poller, ScribeEventsProcessor};
 use std::{
   collections::HashMap, env, net::SocketAddr, panic, path::PathBuf, sync::Arc, time::Duration,
 };
@@ -209,13 +209,14 @@ async fn main() -> Result<()> {
   let mut processors: HashMap<Address, Sender<Event>> = HashMap::new();
 
   for address in addresses.iter() {
-    // Create event processor for each address
-    let (mut event_processor, tx) = ScribeEventsProcessor::new(
+    let scribe_contract = ScribeContractInstance::new(
       address.clone(),
       provider.clone(),
-      flashbot_provider.clone(),
-      cancellation_token.clone(),
+      Some(flashbot_provider.clone()),
     );
+    // Create event processor for each address
+    let (mut event_processor, tx) =
+      ScribeEventsProcessor::new(address.clone(), scribe_contract, cancellation_token.clone());
 
     // Run event distributor process
     set.spawn(async move {

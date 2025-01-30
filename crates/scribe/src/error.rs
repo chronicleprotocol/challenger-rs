@@ -14,6 +14,7 @@
 //  along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use alloy::{
+  network::{Ethereum, TransactionBuilderError},
   primitives::{Address, TxHash},
   providers::PendingTransactionError,
   transports::{RpcError, TransportErrorKind},
@@ -62,6 +63,28 @@ pub enum ContractError {
     #[source]
     source: PendingTransactionError,
   },
+
+  #[error("failed to build transaction for private mempool address {address:?}: {source}")]
+  PrivateChallengeError {
+    address: Address,
+    #[source]
+    source: TransactionBuilderError<Ethereum>,
+  },
+
+  #[error("failed to build transaction for private mempool address {address:?}")]
+  PrivateTransactionBuildError { address: Address },
+
+  #[error("RPC transport error: {0}")]
+  RpcError(#[from] RpcError<TransportErrorKind>),
+
+  #[error("missing private provider for transaction execution on address {address:?}")]
+  MissingPrivateProvider { address: Address },
+
+  #[error("missing block number in log for transaction {0:?}")]
+  NoBlockNumberInLog(Option<TxHash>),
+
+  #[error("failed to fetch block with number {0}")]
+  FailedToFetchBlock(u64),
 }
 
 /// Dynamic event processor result type.
@@ -75,9 +98,6 @@ pub enum ProcessorError {
 
   #[error("RPC transport error: {0}")]
   RpcError(#[from] RpcError<TransportErrorKind>),
-
-  #[error("missing block number in log for transaction {0:?}")]
-  NoBlockNumberInLog(Option<TxHash>),
 
   #[error("failed to fetch block with number {0}")]
   FailedToFetchBlock(u64),
@@ -94,6 +114,9 @@ pub enum ProcessorError {
 
   #[error("address {address:?} challenge cancelled after attempt: {attempt}")]
   ChallengeCancelled { address: Address, attempt: u16 },
+
+  #[error("missing block number in log for transaction {0:?}")]
+  NoBlockNumberInLog(Option<TxHash>),
 }
 
 /// Dynamic event polling result type.
