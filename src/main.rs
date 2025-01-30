@@ -220,7 +220,7 @@ async fn main() -> Result<()> {
 
     // Create event processor for each address
     let (mut event_processor, tx) =
-      ScribeEventsProcessor::new(*address, scribe_contract, cancellation_token.clone());
+      ScribeEventsProcessor::new(scribe_contract, cancellation_token.clone());
 
     // Run event distributor process
     set.spawn(async move {

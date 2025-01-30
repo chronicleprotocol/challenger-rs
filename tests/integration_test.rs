@@ -23,7 +23,7 @@ use alloy::{
   },
 };
 use futures_util::future::join_all;
-use scribe::{Event, Poller, ScribeEventsProcessor};
+use scribe::{contract::ScribeContractInstance, Event, Poller, ScribeEventsProcessor};
 use scribe_optimistic::{
   IScribe, LibSecp256k1, ScribeOptimistic, ScribeOptimistic::ScribeOptimisticInstance,
 };
@@ -491,12 +491,10 @@ async fn start_event_listener(
   let mut processors: HashMap<Address, Sender<Event>> = HashMap::new();
 
   for address in addresses.iter() {
-    let (mut event_distributor, tx) = ScribeEventsProcessor::new(
-      address.clone(),
-      provider.clone(),
-      flashbot_provider.clone(),
-      cancel_token.clone(),
-    );
+    let contract =
+      ScribeContractInstance::new(*address, provider.clone(), Some(flashbot_provider.clone()));
+
+    let (mut event_distributor, tx) = ScribeEventsProcessor::new(contract, cancel_token.clone());
 
     // Run event distributor process
     set.spawn(async move {

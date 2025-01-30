@@ -13,7 +13,7 @@
 //  You should have received a copy of the GNU Affero General Public License
 //  along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use alloy::{primitives::Address, rpc::types::Log};
+use alloy::rpc::types::Log;
 use std::time::Duration;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio_util::sync::CancellationToken;
@@ -35,7 +35,6 @@ const CHALLENGE_POKE_DELAY_MS: u64 = 200;
 // If next received event will be `OpPokeChallengedSuccessfully`, the challenge process is cancelled (no need to spend resources on validation).
 // Otherwise, the challenge process will start procecssing.
 pub struct ScribeEventsProcessor<C: ScribeContract> {
-  address: Address,
   cancel_challenge: Option<CancellationToken>,
   cancellation_token: CancellationToken,
   challenge_period: Option<u64>,
@@ -45,16 +44,11 @@ pub struct ScribeEventsProcessor<C: ScribeContract> {
 
 impl<C: ScribeContract> ScribeEventsProcessor<C> {
   /// Creates a new `ScribeEventsProcessor` instance and returns it along with a sender channel to send events to it.
-  pub fn new(
-    address: Address,
-    scribe_contract: C,
-    cancellation_token: CancellationToken,
-  ) -> (Self, Sender<Event>) {
+  pub fn new(scribe_contract: C, cancellation_token: CancellationToken) -> (Self, Sender<Event>) {
     let (tx, rx) = tokio::sync::mpsc::channel::<Event>(100);
 
     (
       Self {
-        address,
         cancellation_token,
         rx,
         scribe_contract,
@@ -71,7 +65,7 @@ impl<C: ScribeContract> ScribeEventsProcessor<C> {
 
     log::debug!(
       "ScribeEventsProcessor[{:?}] Challenge period fetched: {:?}",
-      self.address,
+      self.scribe_contract.address(),
       period
     );
 
@@ -83,7 +77,7 @@ impl<C: ScribeContract> ScribeEventsProcessor<C> {
   pub async fn start(&mut self) {
     log::debug!(
       "ScribeEventsProcessor[{:?}] Starting new contract handler",
-      self.address
+      self.scribe_contract.address()
     );
     // We have to fail if no challenge period is fetched on start
     self.refresh_challenge_period().await.unwrap();
@@ -94,7 +88,7 @@ impl<C: ScribeContract> ScribeEventsProcessor<C> {
         _ = self.cancellation_token.cancelled() => {
             log::info!(
                 "ScribeEventsProcessor[{:?}] Cancellation requested, stopping contract handler",
-                self.address
+                self.scribe_contract.address()
             );
             return;
         }
@@ -105,7 +99,7 @@ impl<C: ScribeContract> ScribeEventsProcessor<C> {
                 if let Err(err) = self.process_event(event).await {
                   log::error!(
                       "ScribeEventsProcessor[{:?}] Error processing event: {:?}",
-                      self.address,
+                      self.scribe_contract.address(),
                       err
                   );
                 }
@@ -113,7 +107,7 @@ impl<C: ScribeContract> ScribeEventsProcessor<C> {
               None => {
                 log::warn!(
                     "ScribeEventsProcessor[{:?}] Received None event, stopping contract handler",
-                    self.address
+                    self.scribe_contract.address()
                 );
               }
             }
@@ -130,7 +124,7 @@ impl<C: ScribeContract> ScribeEventsProcessor<C> {
         // If `schnorr_signature` is valid, do nothing.
         log::trace!(
           "ScribeEventsProcessor[{:?}] OpPoked received, start processing",
-          self.address
+          self.scribe_contract.address()
         );
 
         let op_poke_challengeable = self
@@ -140,7 +134,7 @@ impl<C: ScribeContract> ScribeEventsProcessor<C> {
 
         log::debug!(
           "ScribeEventsProcessor[{:?}] OpPoked event {:?} challengeable ?: {:?}",
-          self.address,
+          self.scribe_contract.address(),
           log.transaction_hash,
           op_poke_challengeable
         );
@@ -154,7 +148,7 @@ impl<C: ScribeContract> ScribeEventsProcessor<C> {
       Event::OpPokeChallengedSuccessfully { .. } => {
         log::trace!(
           "ScribeEventsProcessor[{:?}] OpPokeChallengedSuccessfully received, cancelling challenge",
-          self.address
+          self.scribe_contract.address()
         );
 
         self.cancel_challenge();
@@ -216,7 +210,7 @@ impl<C: ScribeContract> ScribeEventsProcessor<C> {
 
     log::debug!(
       "ScribeEventsProcessor[{:?}] Spawned New challenger process",
-      self.address
+      self.scribe_contract.address()
     );
   }
 
@@ -224,7 +218,7 @@ impl<C: ScribeContract> ScribeEventsProcessor<C> {
     if let Some(cancel) = &self.cancel_challenge {
       log::debug!(
         "ScribeEventsProcessor[{:?}] Cancelling existing challenge",
-        self.address
+        self.scribe_contract.address()
       );
       cancel.cancel();
       self.cancel_challenge = None;
