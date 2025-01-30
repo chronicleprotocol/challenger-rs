@@ -40,8 +40,7 @@ use crate::{
   metrics, Event,
 };
 
-// const POLL_INTERVAL_SEC: u64 = 30;
-const MAX_ADDRESS_PER_REQUEST: usize = 50;
+const MAX_ADDRESS_PER_REQUEST: usize = 10;
 const MAX_RETRY_COUNT: u16 = 5;
 
 /// The provider type used to interact with the Ethereum network with a signer.

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-alloy = { workspace = true, features = ["full"] }
+alloy = { workspace = true, features = ["full", "rpc-types-mev"] }
 chrono = { workspace = true }
 log = { workspace = true }
 metrics = { workspace = true }
