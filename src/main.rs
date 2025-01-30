@@ -51,9 +51,9 @@ struct Cli {
 
   #[arg(
     long,
-    help = "Flashbot Node HTTP RPC_URL, normally starts with https://****"
+    help = "Flashbot Node HTTP RPC_URL, like https://rpc-sepolia.flashbots.net/fast"
   )]
-  flashbot_rpc_url: String,
+  flashbot_rpc_url: Option<String>,
 
   #[arg(
     long = "secret-key",
@@ -152,23 +152,29 @@ async fn main() -> Result<()> {
       .on_client(client),
   );
 
-  // Create new HTTP client for flashbots
-  // TODO add correct gas handling etc.
-  let flashbot_client = ClientBuilder::default()
-    .layer(RetryBackoffLayer::new(15, 200, 300))
-    .http(args.flashbot_rpc_url.parse()?);
+  // Genrerating flashbot provider if provided
+  let flashbot_provider = match args.flashbot_rpc_url {
+    None => None,
+    Some(url) => {
+      // Create new HTTP client for flashbots
+      // TODO add correct gas handling etc.
+      let flashbot_client = ClientBuilder::default()
+        .layer(RetryBackoffLayer::new(15, 200, 300))
+        .http(url.parse()?);
 
-  let flashbot_provider = Arc::new(
-    ProviderBuilder::new()
-      // Add gas automatic gas field completion
-      .with_recommended_fillers()
-      // Add chain id request from rpc
-      .filler(ChainIdFiller::new(args.chain_id))
-      // .filler(nonce_manager.clone())
-      // Add default signer
-      .wallet(signer.clone())
-      .on_client(flashbot_client),
-  );
+      Some(Arc::new(
+        ProviderBuilder::new()
+          // Add gas automatic gas field completion
+          .with_recommended_fillers()
+          // Add chain id request from rpc
+          .filler(ChainIdFiller::new(args.chain_id))
+          // .filler(nonce_manager.clone())
+          // Add default signer
+          .wallet(signer.clone())
+          .on_client(flashbot_client),
+      ))
+    }
+  };
 
   // let signer_lock = Arc::new(Mutex::new(signer));
 
@@ -210,7 +216,8 @@ async fn main() -> Result<()> {
 
   for address in addresses.iter() {
     let scribe_contract =
-      ScribeContractInstance::new(*address, provider.clone(), Some(flashbot_provider.clone()));
+      ScribeContractInstance::new(*address, provider.clone(), flashbot_provider.clone());
+
     // Create event processor for each address
     let (mut event_processor, tx) =
       ScribeEventsProcessor::new(*address, scribe_contract, cancellation_token.clone());
@@ -306,7 +313,7 @@ mod tests {
       raw_password: None,
       password_file: None,
       rpc_url: "http://localhost:8545".to_string(),
-      flashbot_rpc_url: "http://localhost:8545".to_string(),
+      flashbot_rpc_url: Some("http://localhost:8545".to_string()),
       from_block: None,
     };
 
@@ -328,7 +335,7 @@ mod tests {
       raw_password: None,
       password_file: None,
       rpc_url: "http://localhost:8545".to_string(),
-      flashbot_rpc_url: "http://localhost:8545".to_string(),
+      flashbot_rpc_url: Some("http://localhost:8545".to_string()),
       from_block: None,
     };
 
@@ -357,7 +364,7 @@ mod tests {
       raw_password: None,
       password_file: Some(keystore_password_file),
       rpc_url: "http://localhost:8545".to_string(),
-      flashbot_rpc_url: "http://localhost:8545".to_string(),
+      flashbot_rpc_url: Some("http://localhost:8545".to_string()),
       from_block: None,
     };
 
@@ -383,7 +390,7 @@ mod tests {
       raw_password: Some("keystorepassword".to_string()),
       password_file: None,
       rpc_url: "http://localhost:8545".to_string(),
-      flashbot_rpc_url: "http://localhost:8545".to_string(),
+      flashbot_rpc_url: Some("http://localhost:8545".to_string()),
       from_block: None,
     };
 
