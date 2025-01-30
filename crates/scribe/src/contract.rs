@@ -139,7 +139,7 @@ impl ScribeContractInstance {
     // be included in a block by a Flashbots builder.
     let pending_tx = private_provider.send_raw_transaction(&tx).await?;
 
-    log::debug!(
+    log::info!(
       "Contract[{:?}]: Sent private transaction with hash: {:?}",
       self.address(),
       pending_tx.tx_hash()
@@ -160,7 +160,7 @@ impl ScribeContractInstance {
   // Challenges given `OpPoked` event with given `schnorr_data` using public mempool.
   // Executes `opChallenge` method on the contract and returns transaction hash if everything worked well.
   async fn challenge_with_public(&self, schnorr_data: &SchnorrData) -> ContractResult<TxHash> {
-    log::debug!(
+    log::info!(
       "Contract[{:?}]: Challenging OpPoke using public mempool with schnorr_data {:?}",
       self.address(),
       &schnorr_data
@@ -312,7 +312,7 @@ impl ScribeContract for ScribeContractInstance {
       }
     };
 
-    log::debug!(
+    log::info!(
       "Contract[{:?}]: Falling back to public provider for challenge",
       self.address()
     );
