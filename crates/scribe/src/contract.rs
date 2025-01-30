@@ -17,19 +17,12 @@ use std::{fmt::Debug, future::Future, sync::Arc, time::Duration};
 
 use alloy::{
   eips::eip2718::Encodable2718,
-  network::{Ethereum, NetworkWallet, TransactionBuilder},
   primitives::{Address, TxHash},
-  providers::{PendingTransactionBuilder, Provider, WalletProvider},
-  rpc::types::{
-    mev::{PrivateTransactionPreferences, PrivateTransactionRequest},
-    BlockTransactionsKind, Log,
-  },
+  providers::Provider,
+  rpc::types::{BlockTransactionsKind, Log},
   sol,
   transports::{
-    http::{
-      reqwest::header::{HeaderMap, HeaderValue},
-      Client, Http,
-    },
+    http::{Client, Http},
     layers::RetryBackoffService,
   },
 };
@@ -52,15 +45,12 @@ sol! {
 }
 
 // Confirmation timeout for the transaction
-const TX_CONFIRMATION_TIMEOUT: Duration = Duration::from_secs(30);
-
-// Maximum number of blocks to wait for the transaction to be mined.
-const MAX_BLOCKS_TO_WAIT: u64 = 10;
+const TX_CONFIRMATION_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// The RPC transport type used to interact with the Ethereum network.
 pub type RpcTransportWithRetry = RetryBackoffService<Http<Client>>;
 
-pub type ChallengePendingTx = PendingTransactionBuilder<RpcTransportWithRetry, Ethereum>;
+// pub type ChallengePendingTx = PendingTransactionBuilder<RpcTransportWithRetry, Ethereum>;
 
 /// This trait provides methods required for `challenger` to interact with the ScribeOptimistic smart contract.
 pub trait ScribeContract: Clone + Send + Sync + 'static {
@@ -84,7 +74,6 @@ pub trait ScribeContract: Clone + Send + Sync + 'static {
   fn challenge(
     &self,
     schnorr_data: SchnorrData,
-    gas_limit: u64,
   ) -> impl Future<Output = ContractResult<TxHash>> + Send;
 
   // /// Returns a new provider with the same signer.
@@ -117,11 +106,7 @@ impl ScribeContractInstance {
   // Challenges given `OpPoked` event with given `schnorr_data` using private mempool.
   // Executes `opChallenge` method on the contract and returns transaction hash if everything worked well.
   // NOTE: This method uses `eth_sendPrivateTransaction` to send the transaction, so RPC have to support it.
-  async fn challenge_with_private(
-    &self,
-    schnorr_data: &SchnorrData,
-    gas_limit: u64,
-  ) -> ContractResult<ChallengePendingTx> {
+  async fn challenge_with_private(&self, schnorr_data: &SchnorrData) -> ContractResult<TxHash> {
     let Some(private_provider) = self.private_provider.clone() else {
       return Err(ContractError::MissingPrivateProvider {
         address: self.address().clone(),
@@ -141,22 +126,8 @@ impl ScribeContractInstance {
       // .gas(gas_limit)
       .into_transaction_request();
 
-    let sendable = self.contract.provider().clone().fill(tx).await?;
+    let sendable = private_provider.fill(tx).await?;
 
-    // let Some(builder) = sendable.as_builder() else {
-    //   return Err(ContractError::PrivateTransactionBuildError {
-    //     address: self.address().clone(),
-    //   });
-    // };
-
-    // let tx = builder
-    //   .clone()
-    //   .build(private_provider.wallet())
-    //   .await
-    //   .map_err(|e| ContractError::PrivateChallengeError {
-    //     address: self.address().clone(),
-    //     source: e,
-    //   })?
     let Some(envelop) = sendable.as_envelope() else {
       return Err(ContractError::PrivateTransactionBuildError {
         address: self.address().clone(),
@@ -164,38 +135,31 @@ impl ScribeContractInstance {
     };
     let tx = envelop.encoded_2718();
 
-    // Getting the current block number, to calculate the max block number for the transaction.
-    let block_number = self.contract.provider().get_block_number().await?;
+    // Send the raw transaction. The transaction is sent to the Flashbots relay and, if valid, will
+    // be included in a block by a Flashbots builder.
+    let pending_tx = private_provider.send_raw_transaction(&tx).await?;
 
-    // TODO: set max block number properly
-    let params = PrivateTransactionRequest {
-      tx: tx.into(),
-      max_block_number: Some(block_number + MAX_BLOCKS_TO_WAIT),
-      preferences: PrivateTransactionPreferences {
-        privacy: None,
-        validity: None,
-      },
-    };
+    log::debug!(
+      "Contract[{:?}]: Sent private transaction with hash: {:?}",
+      self.address(),
+      pending_tx.tx_hash()
+    );
 
-    // let rlp_hex = hex::encode_prefixed(encoded_tx)
-    let tx_hash = private_provider
-      .client()
-      .request("eth_sendPrivateTransaction", (params,))
-      .await?;
+    let tx_hash = pending_tx
+      .with_timeout(Some(TX_CONFIRMATION_TIMEOUT))
+      .watch()
+      .await
+      .map_err(|e| ContractError::PendingTransactionError {
+        address: self.address().clone(),
+        source: e,
+      })?;
 
-    let pending_tx =
-      PendingTransactionBuilder::new(self.contract.provider().root().clone(), tx_hash);
-
-    Ok(pending_tx)
+    Ok(tx_hash)
   }
 
   // Challenges given `OpPoked` event with given `schnorr_data` using public mempool.
   // Executes `opChallenge` method on the contract and returns transaction hash if everything worked well.
-  async fn challenge_with_public(
-    &self,
-    schnorr_data: &SchnorrData,
-    gas_limit: u64,
-  ) -> ContractResult<ChallengePendingTx> {
+  async fn challenge_with_public(&self, schnorr_data: &SchnorrData) -> ContractResult<TxHash> {
     log::debug!(
       "Contract[{:?}]: Challenging OpPoke using public mempool with schnorr_data {:?}",
       self.address(),
@@ -210,6 +174,13 @@ impl ScribeContractInstance {
       .send()
       .await
       .map_err(|e| ContractError::AlloyContractError {
+        address: self.address().clone(),
+        source: e,
+      })?
+      .with_timeout(Some(TX_CONFIRMATION_TIMEOUT))
+      .watch()
+      .await
+      .map_err(|e| ContractError::PendingTransactionError {
         address: self.address().clone(),
         source: e,
       })?;
@@ -323,47 +294,30 @@ impl ScribeContract for ScribeContractInstance {
 
   /// Challenges given `OpPoked` event with given `schnorr_data`.
   /// Executes `opChallenge` method on the contract and returns transaction hash if everything worked well.
-  async fn challenge(&self, schnorr_data: SchnorrData, gas_limit: u64) -> ContractResult<TxHash> {
-    // let pending_tx = match self.challenge_with_private(&schnorr_data, gas_limit).await {
-    //   Ok(pending_tx) => pending_tx,
-    //   Err(ContractError::MissingPrivateProvider { address }) => {
-    //     log::warn!(
-    //       "Contract[{:?}]: Private provider is missing, falling back to public provider",
-    //       address
-    //     );
-
-    //     self.challenge_with_public(&schnorr_data, gas_limit).await?
-    //   }
-    //   Err(e) => {
-    //     log::error!(
-    //       "Contract[{:?}]: Error while challenging with private provider: {:?}",
-    //       self.address(),
-    //       e
-    //     );
-
-    //     self.challenge_with_public(&schnorr_data, gas_limit).await?
-    //   }
-    // };
-
-    let pending_tx = self
-      .challenge_with_private(&schnorr_data, gas_limit)
-      .await?;
+  async fn challenge(&self, schnorr_data: SchnorrData) -> ContractResult<TxHash> {
+    match self.challenge_with_private(&schnorr_data).await {
+      Ok(tx_hash) => return Ok(tx_hash),
+      Err(ContractError::MissingPrivateProvider { address }) => {
+        log::warn!(
+          "Contract[{:?}]: Private provider is missing, falling back to public provider",
+          address
+        );
+      }
+      Err(e) => {
+        log::error!(
+          "Contract[{:?}]: Error while challenging with private provider: {:?}",
+          self.address(),
+          e
+        );
+      }
+    };
 
     log::debug!(
       "Contract[{:?}]: Falling back to public provider for challenge",
       self.address()
     );
 
-    let tx_hash = pending_tx
-      .with_timeout(Some(TX_CONFIRMATION_TIMEOUT))
-      .watch()
-      .await
-      .map_err(|e| ContractError::PendingTransactionError {
-        address: self.address().clone(),
-        source: e,
-      })?;
-
-    Ok(tx_hash)
+    Ok(self.challenge_with_public(&schnorr_data).await?)
   }
 
   /// Returns true if given `OpPoked` event is challengeable.

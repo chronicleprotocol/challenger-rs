@@ -17,7 +17,7 @@ use alloy::{
   primitives::Address,
   providers::{fillers::ChainIdFiller, ProviderBuilder},
   rpc::client::ClientBuilder,
-  transports::{http::Client, layers::RetryBackoffLayer},
+  transports::layers::RetryBackoffLayer,
 };
 use clap::Parser;
 use env_logger::Env;

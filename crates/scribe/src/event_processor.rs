@@ -25,7 +25,6 @@ use crate::{
   metrics,
 };
 
-const GAS_LIMIT: u64 = 200000;
 const CHALLENGE_POKE_DELAY_MS: u64 = 200;
 
 // Receives preparsed [crate::contract::EventWithMetadata] events for a `ScribeOptimistic` instance on address,
@@ -192,7 +191,7 @@ impl<C: ScribeContract> ScribeEventsProcessor<C> {
             &contract.address()
           );
 
-          match contract.challenge(schnorr_data, GAS_LIMIT).await {
+          match contract.challenge(schnorr_data).await {
             Ok(tx_hash) => {
               // Increment the challenge counter
               metrics::inc_challenge_counter(contract.address().clone());
