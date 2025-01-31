@@ -25,7 +25,10 @@ use eyre::Result;
 use log::{error, info};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use metrics_process::Collector;
-use scribe::{contract::ScribeContractInstance, metrics, Event, Poller, ScribeEventsProcessor};
+use scribe::{
+  contract::ScribeContractInstance, metrics, provider::EthereumPollProvider, Event, Poller,
+  ScribeEventsProcessor,
+};
 use std::{
   collections::HashMap, env, net::SocketAddr, panic, path::PathBuf, sync::Arc, time::Duration,
 };
@@ -35,7 +38,7 @@ use tokio_util::sync::CancellationToken;
 mod wallet;
 use wallet::{CustomWallet, KeystoreWallet, PrivateKeyWallet};
 
-/// Cli interface for the challenger.
+/// CLI interface for the challenger.
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
 struct Cli {
@@ -157,7 +160,6 @@ async fn main() -> Result<()> {
     None => None,
     Some(url) => {
       // Create new HTTP client for flashbots
-      // TODO add correct gas handling etc.
       let flashbot_client = ClientBuilder::default()
         .layer(RetryBackoffLayer::new(15, 200, 300))
         .http(url.parse()?);
@@ -233,9 +235,10 @@ async fn main() -> Result<()> {
 
   // Create events listener
   let mut poller = Poller::new(
+    signer.default_signer().address(),
     processors,
     cancellation_token.clone(),
-    provider.clone(),
+    EthereumPollProvider::new(provider.clone()),
     30,
     args.from_block,
   );

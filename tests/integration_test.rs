@@ -23,7 +23,10 @@ use alloy::{
   },
 };
 use futures_util::future::join_all;
-use scribe::{contract::ScribeContractInstance, Event, Poller, ScribeEventsProcessor};
+use scribe::{
+  contract::ScribeContractInstance, provider::EthereumPollProvider, Event, Poller,
+  ScribeEventsProcessor,
+};
 use scribe_optimistic::{
   IScribe, LibSecp256k1, ScribeOptimistic, ScribeOptimistic::ScribeOptimisticInstance,
 };
@@ -504,7 +507,14 @@ async fn start_event_listener(
     processors.insert(address.clone(), tx);
   }
   // Create events listener
-  let mut poller = Poller::new(processors, cancel_token.clone(), provider.clone(), 1, None);
+  let mut poller = Poller::new(
+    signer.default_signer().address(),
+    processors,
+    cancel_token.clone(),
+    EthereumPollProvider::new(provider.clone()),
+    1,
+    None,
+  );
 
   // Run events listener process
   set.spawn(async move {

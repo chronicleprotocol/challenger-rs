@@ -158,9 +158,9 @@ impl<C: ScribeContract> ScribeEventsProcessor<C> {
     Ok(())
   }
 
-  //
+  // spawns challenge process for the `OpPoked` event in separate thread.
   fn spawn_challenge(&mut self, log: &Log<OpPoked>) {
-    // Ensure there is no existing challenge existing
+    // Ensure there is no existing challenge process existing
     self.cancel_challenge();
     // Create a new child cancellation token, so it will be cancelled when the main process is cancelled
     let child_cancellation_token = self.cancellation_token.child_token();

@@ -13,52 +13,26 @@
 //  You should have received a copy of the GNU Affero General Public License
 //  along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{collections::HashMap, time::Duration};
 
 use alloy::{
-  network::{Ethereum, EthereumWallet},
   primitives::Address,
-  providers::{
-    fillers::{
-      BlobGasFiller, ChainIdFiller, FillProvider, GasFiller, JoinFill, NonceFiller, WalletFiller,
-    },
-    Identity, Provider, RootProvider, WalletProvider,
-  },
   rpc::types::{Filter, Log},
   sol_types::SolEvent,
-  transports::{
-    http::{Client, Http},
-    layers::RetryBackoffService,
-  },
 };
-use tokio::{select, sync::mpsc::Sender};
+use tokio::sync::mpsc::Sender;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
   contract::ScribeOptimistic::{OpPokeChallengedSuccessfully, OpPoked},
   error::{PollerError, PollerResult},
-  metrics, Event,
+  metrics,
+  provider::PollProvider,
+  Event,
 };
 
 const MAX_ADDRESS_PER_REQUEST: usize = 10;
 const MAX_RETRY_COUNT: u16 = 5;
-
-/// The provider type used to interact with the Ethereum network with a signer.
-pub type RetryProviderWithSigner = FillProvider<
-  JoinFill<
-    JoinFill<
-      JoinFill<
-        Identity,
-        JoinFill<GasFiller, JoinFill<BlobGasFiller, JoinFill<NonceFiller, ChainIdFiller>>>,
-      >,
-      ChainIdFiller,
-    >,
-    WalletFiller<EthereumWallet>,
-  >,
-  RootProvider<RetryBackoffService<Http<Client>>>,
-  RetryBackoffService<Http<Client>>,
-  Ethereum,
->;
 
 /// Poller is responsible for polling for new events in the Ethereum network.
 /// It will poll for new events in the range `self.last_processes_block..latest_block`
@@ -66,25 +40,28 @@ pub type RetryProviderWithSigner = FillProvider<
 /// It will send the new events to the `tx` channel.
 /// For optimization reasons, it will query for events in chunks of `MAX_ADDRESS_PER_REQUEST` addresses.
 #[derive(Debug, Clone)]
-pub struct Poller {
+pub struct Poller<P: PollProvider> {
+  from: Address,
   addresses: Vec<Address>,
   cancellation_token: CancellationToken,
   handler_channels: HashMap<Address, Sender<Event>>,
   last_processes_block: u64,
   poll_interval_seconds: u64,
-  provider: Arc<RetryProviderWithSigner>,
+  provider: P,
   retry_count: u16,
 }
 
-impl Poller {
+impl<P: PollProvider> Poller<P> {
   pub fn new(
+    from: Address,
     handler_channels: HashMap<Address, Sender<Event>>,
     cancellation_token: CancellationToken,
-    provider: Arc<RetryProviderWithSigner>,
+    provider: P,
     poll_interval_seconds: u64,
     from_block: Option<u64>,
   ) -> Self {
     Self {
+      from,
       addresses: handler_channels.keys().cloned().collect(),
       cancellation_token,
       provider,
@@ -168,7 +145,7 @@ impl Poller {
             );
             // Send event to the channel
             let Some(tx) = self.handler_channels.get(&event.address()) else {
-              // TODO: should never happen
+              // should never happen !
               panic!(
                 "Poller: No channel found for address {:?}, skipping",
                 &event.address()
@@ -190,7 +167,7 @@ impl Poller {
     // +1 because we don't need to get data from same block twice
     self.last_processes_block = latest_block + 1;
     // Updating last scanned block metric
-    metrics::set_last_scanned_block(self.provider.default_signer_address(), latest_block as i64);
+    metrics::set_last_scanned_block(self.from, latest_block as i64);
 
     Ok(())
   }
@@ -200,27 +177,28 @@ impl Poller {
     log::info!("Poller: Starting polling events from RPC...");
 
     loop {
-      select! {
-          _ = self.cancellation_token.cancelled() => {
-              log::info!("Poller: got cancel signal, terminating...");
-              return Ok(());
-          }
-          _ = tokio::time::sleep(Duration::from_secs(self.poll_interval_seconds)) => {
-              log::trace!("Poller: Executing tick for events listener...");
-              if let Err(err) = self.poll().await {
-                  if self.retry_count >= MAX_RETRY_COUNT {
-                      log::error!(
-                          "Poller: Max {} reties reached, will not retry anymore: {:?}",
-                          MAX_RETRY_COUNT,
-                          err
-                      );
-                      return Err(PollerError::MaxRetryAttemptsExceeded(MAX_RETRY_COUNT));
-                  }
+      tokio::select! {
+        _ = self.cancellation_token.cancelled() => {
+          log::info!("Poller: got cancel signal, terminating...");
+          return Ok(());
+        }
+        _ = tokio::time::sleep(Duration::from_secs(self.poll_interval_seconds)) => {
+          log::trace!("Poller: Executing tick for events listener...");
+          if let Err(err) = self.poll().await {
+            if self.retry_count >= MAX_RETRY_COUNT {
+              log::error!(
+                "Poller: Max {} reties reached, will not retry anymore: {:?}",
+                MAX_RETRY_COUNT,
+                err
+              );
+              return Err(PollerError::MaxRetryAttemptsExceeded(MAX_RETRY_COUNT));
+            }
 
-                  self.retry_count += 1;
-                  log::error!("Poller: Failed to poll for events, will retry: {:?}", err);
-              }
+            self.retry_count += 1;
+
+            log::error!("Poller: Failed to poll for events, will retry: {:?}", err);
           }
+        }
       }
     }
   }

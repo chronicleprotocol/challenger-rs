@@ -56,8 +56,7 @@ pub enum ContractError {
     source: alloy::contract::Error,
   },
 
-  // TODO: tbd
-  #[error("failed to ")]
+  #[error("failed to wait for transaction confirmation on address {address:?}: {source}")]
   PendingTransactionError {
     address: Address,
     #[source]
@@ -133,4 +132,17 @@ pub enum PollerError {
 
   #[error("maximum retry attempts of {0} exceeded")]
   MaxRetryAttemptsExceeded(u16),
+
+  #[error(transparent)]
+  ProviderError(#[from] PollProviderError),
+}
+
+/// Dynamic event polling result type.
+pub type PollProviderResult<T, E = PollProviderError> = core::result::Result<T, E>;
+
+/// Error when polling events from chain.
+#[derive(thiserror::Error, Debug)]
+pub enum PollProviderError {
+  #[error("RPC transport error: {0}")]
+  RpcError(#[from] RpcError<TransportErrorKind>),
 }

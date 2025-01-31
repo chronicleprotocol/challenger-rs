@@ -20,9 +20,11 @@ mod event_processor;
 pub use event_processor::ScribeEventsProcessor;
 
 mod events_poller;
-pub use events_poller::{Poller, RetryProviderWithSigner};
+pub use events_poller::Poller;
 
 mod event;
 pub use event::Event;
 
 pub mod metrics;
+
+pub mod provider;

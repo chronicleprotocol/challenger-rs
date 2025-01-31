@@ -30,7 +30,7 @@ use alloy::{
 
 use crate::{
   error::{ContractError, ContractResult},
-  RetryProviderWithSigner,
+  provider::FullHTTPRetryProviderWithSigner,
 };
 use IScribe::SchnorrData;
 use ScribeOptimistic::ScribeOptimisticInstance;
@@ -84,17 +84,17 @@ pub trait ScribeContract: Clone + Send + Sync + 'static {
 #[derive(Debug, Clone)]
 pub struct ScribeContractInstance {
   // Contract based on public provider.
-  contract: ScribeOptimisticInstance<RpcTransportWithRetry, Arc<RetryProviderWithSigner>>,
+  contract: ScribeOptimisticInstance<RpcTransportWithRetry, Arc<FullHTTPRetryProviderWithSigner>>,
   // public_provider: Arc<RetryProviderWithSigner>,
-  private_provider: Option<Arc<RetryProviderWithSigner>>,
+  private_provider: Option<Arc<FullHTTPRetryProviderWithSigner>>,
 }
 
 impl ScribeContractInstance {
   /// Creates a new ScribeOptimisticInstance
   pub fn new(
     address: Address,
-    public_provider: Arc<RetryProviderWithSigner>,
-    private_provider: Option<Arc<RetryProviderWithSigner>>,
+    public_provider: Arc<FullHTTPRetryProviderWithSigner>,
+    private_provider: Option<Arc<FullHTTPRetryProviderWithSigner>>,
   ) -> Self {
     let contract = ScribeOptimistic::new(address, public_provider.clone());
     Self {
@@ -113,7 +113,7 @@ impl ScribeContractInstance {
       });
     };
 
-    log::debug!(
+    log::info!(
       "Contract[{:?}]: Challenging OpPoke using private mempool with schnorr_data {:?}",
       self.address(),
       &schnorr_data
@@ -122,8 +122,6 @@ impl ScribeContractInstance {
     let tx = self
       .contract
       .opChallenge(schnorr_data.clone())
-      // TODO: set gas limit properly
-      // .gas(gas_limit)
       .into_transaction_request();
 
     let sendable = private_provider.fill(tx).await?;
@@ -166,11 +164,9 @@ impl ScribeContractInstance {
       &schnorr_data
     );
 
-    let transaction = self.contract.opChallenge(schnorr_data.clone());
-    // TODO: set gas limit properly
-    // .gas(gas_limit);
-
-    let tx = transaction
+    let tx = self
+      .contract
+      .opChallenge(schnorr_data.clone())
       .send()
       .await
       .map_err(|e| ContractError::AlloyContractError {
