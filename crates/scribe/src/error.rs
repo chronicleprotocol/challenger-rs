@@ -135,6 +135,9 @@ pub enum PollerError {
 
   #[error(transparent)]
   ProviderError(#[from] PollProviderError),
+
+  #[error(transparent)]
+  ContractError(#[from] ContractError),
 }
 
 /// Dynamic event polling result type.

@@ -21,12 +21,7 @@ use alloy::{
   providers::Provider,
   rpc::types::{BlockTransactionsKind, Log},
   sol,
-  transports::{
-    http::{Client, Http},
-    layers::RetryBackoffService,
-  },
 };
-// use eyre::{bail, Result, WrapErr};
 
 use crate::{
   error::{ContractError, ContractResult},
@@ -39,18 +34,13 @@ use ScribeOptimistic::ScribeOptimisticInstance;
 sol! {
   #[allow(missing_docs)]
   #[sol(rpc)]
-  #[derive(Debug)]
+  #[derive(Debug, Default)]
   ScribeOptimistic,
   "abi/ScribeOptimistic.json"
 }
 
 // Confirmation timeout for the transaction
 const TX_CONFIRMATION_TIMEOUT: Duration = Duration::from_secs(300);
-
-/// The RPC transport type used to interact with the Ethereum network.
-pub type RpcTransportWithRetry = RetryBackoffService<Http<Client>>;
-
-// pub type ChallengePendingTx = PendingTransactionBuilder<RpcTransportWithRetry, Ethereum>;
 
 /// This trait provides methods required for `challenger` to interact with the ScribeOptimistic smart contract.
 pub trait ScribeContract: Clone + Send + Sync + 'static {
@@ -75,16 +65,13 @@ pub trait ScribeContract: Clone + Send + Sync + 'static {
     &self,
     schnorr_data: SchnorrData,
   ) -> impl Future<Output = ContractResult<TxHash>> + Send;
-
-  // /// Returns a new provider with the same signer.
-  // fn get_cloned_provider(&self) -> Arc<RetryProviderWithSigner>;
 }
 
 /// ScribeOptimisticProviderInstance is a real implementation of ScribeOptimisticProvider based on raw JSON-RPC calls.
 #[derive(Debug, Clone)]
 pub struct ScribeContractInstance {
   // Contract based on public provider.
-  contract: ScribeOptimisticInstance<RpcTransportWithRetry, Arc<FullHTTPRetryProviderWithSigner>>,
+  contract: ScribeOptimisticInstance<(), Arc<FullHTTPRetryProviderWithSigner>>,
   // public_provider: Arc<RetryProviderWithSigner>,
   private_provider: Option<Arc<FullHTTPRetryProviderWithSigner>>,
 }
@@ -96,17 +83,118 @@ impl ScribeContractInstance {
     public_provider: Arc<FullHTTPRetryProviderWithSigner>,
     private_provider: Option<Arc<FullHTTPRetryProviderWithSigner>>,
   ) -> Self {
-    let contract = ScribeOptimistic::new(address, public_provider.clone());
     Self {
-      contract,
+      contract: ScribeOptimistic::new(address, public_provider),
       private_provider,
     }
   }
 
-  // Challenges given `OpPoked` event with given `schnorr_data` using private mempool.
-  // Executes `opChallenge` method on the contract and returns transaction hash if everything worked well.
-  // NOTE: This method uses `eth_sendPrivateTransaction` to send the transaction, so RPC have to support it.
-  async fn challenge_with_private(&self, schnorr_data: &SchnorrData) -> ContractResult<TxHash> {
+  // Checks if the log is stale, i.e. if the event is outside of the challenge period.
+  // If the block timestamp is missing, it is fetched from the block number.
+  // If the block number is also missing, an error is returned.
+  async fn is_log_stale(
+    &self,
+    log: &Log<ScribeOptimistic::OpPoked>,
+    challenge_period: u64,
+  ) -> ContractResult<bool> {
+    // Check if the poke is within the challenge period
+    let event_timestamp = match log.block_timestamp {
+      Some(timestamp) => timestamp,
+      None => {
+        if log.block_number.is_none() {
+          return Err(ContractError::NoBlockNumberInLog(log.transaction_hash));
+        }
+
+        self
+          .get_timestamp_from_block(log.block_number.unwrap())
+          .await?
+      }
+    };
+
+    let current_timestamp = chrono::Utc::now().timestamp() as u64;
+    log::debug!(
+      "ScribeEventsProcessor[{:?}] OpPoked, event_timestamp: {:?}, current_timestamp: {:?}",
+      self.contract.address(),
+      event_timestamp,
+      current_timestamp
+    );
+
+    Ok(current_timestamp - event_timestamp > challenge_period)
+  }
+
+  // Gets the timestamp from the block by `event.log.block_number`, if it is missing, returns an error
+  async fn get_timestamp_from_block(&self, block_number: u64) -> ContractResult<u64> {
+    let Some(block) = self
+      .contract
+      .provider()
+      .get_block(block_number.into(), BlockTransactionsKind::Hashes)
+      .await?
+    else {
+      return Err(ContractError::FailedToFetchBlock(block_number));
+    };
+
+    Ok(block.header.timestamp)
+  }
+
+  async fn is_signature_valid(&self, op_poked: ScribeOptimistic::OpPoked) -> ContractResult<bool> {
+    log::trace!(
+      "Contract[{:?}]: Validating OpPoke signature",
+      self.address()
+    );
+
+    let message = self
+      .contract
+      .constructPokeMessage(op_poked.pokeData)
+      .call()
+      .await
+      .map_err(|e| ContractError::AlloyContractError {
+        address: *self.address(),
+        source: e,
+      })?
+      ._0;
+
+    let acceptable = self
+      .contract
+      .isAcceptableSchnorrSignatureNow(message, op_poked.schnorrData)
+      .call()
+      .await
+      .map_err(|e| ContractError::AlloyContractError {
+        address: *self.address(),
+        source: e,
+      })?
+      ._0;
+
+    Ok(acceptable)
+  }
+
+  async fn challenge_with_public(&self, schnorr_data: &SchnorrData) -> ContractResult<TxHash> {
+    log::info!(
+      "Contract[{:?}]: Challenging OpPoke using public mempool with schnorr_data {:?}",
+      self.address(),
+      &schnorr_data
+    );
+
+    let tx = self
+      .contract
+      .opChallenge(schnorr_data.clone())
+      .send()
+      .await
+      .map_err(|e| ContractError::AlloyContractError {
+        address: *self.address(),
+        source: e,
+      })?
+      .with_timeout(Some(TX_CONFIRMATION_TIMEOUT))
+      .watch()
+      .await
+      .map_err(|e| ContractError::PendingTransactionError {
+        address: *self.address(),
+        source: e,
+      })?;
+
+    Ok(tx)
+  }
+
+  async fn challenge_with_flashbots(&self, schnorr_data: &SchnorrData) -> ContractResult<TxHash> {
     let Some(private_provider) = self.private_provider.clone() else {
       return Err(ContractError::MissingPrivateProvider {
         address: *self.address(),
@@ -154,116 +242,6 @@ impl ScribeContractInstance {
 
     Ok(tx_hash)
   }
-
-  // Challenges given `OpPoked` event with given `schnorr_data` using public mempool.
-  // Executes `opChallenge` method on the contract and returns transaction hash if everything worked well.
-  async fn challenge_with_public(&self, schnorr_data: &SchnorrData) -> ContractResult<TxHash> {
-    log::info!(
-      "Contract[{:?}]: Challenging OpPoke using public mempool with schnorr_data {:?}",
-      self.address(),
-      &schnorr_data
-    );
-
-    let tx = self
-      .contract
-      .opChallenge(schnorr_data.clone())
-      .send()
-      .await
-      .map_err(|e| ContractError::AlloyContractError {
-        address: *self.address(),
-        source: e,
-      })?
-      .with_timeout(Some(TX_CONFIRMATION_TIMEOUT))
-      .watch()
-      .await
-      .map_err(|e| ContractError::PendingTransactionError {
-        address: *self.address(),
-        source: e,
-      })?;
-
-    Ok(tx)
-  }
-
-  /// Validates schnorr signature from given `OpPoked`.
-  /// Uses `constructPokeMessage` and `isAcceptableSchnorrSignatureNow` methods from the contract.
-  /// Returns true if the signature is valid.
-  async fn is_signature_valid(&self, op_poked: ScribeOptimistic::OpPoked) -> ContractResult<bool> {
-    log::trace!(
-      "Contract[{:?}]: Validating OpPoke signature",
-      self.address()
-    );
-
-    let message = self
-      .contract
-      .constructPokeMessage(op_poked.pokeData)
-      .call()
-      .await
-      .map_err(|e| ContractError::AlloyContractError {
-        address: *self.address(),
-        source: e,
-      })?
-      ._0;
-
-    let acceptable = self
-      .contract
-      .isAcceptableSchnorrSignatureNow(message, op_poked.schnorrData)
-      .call()
-      .await
-      .map_err(|e| ContractError::AlloyContractError {
-        address: *self.address(),
-        source: e,
-      })?
-      ._0;
-
-    Ok(acceptable)
-  }
-
-  // Gets the timestamp from the block by `event.log.block_number`, if it is missing, returns an error
-  async fn get_timestamp_from_block(&self, block_number: u64) -> ContractResult<u64> {
-    let Some(block) = self
-      .contract
-      .provider()
-      .get_block(block_number.into(), BlockTransactionsKind::Hashes)
-      .await?
-    else {
-      return Err(ContractError::FailedToFetchBlock(block_number));
-    };
-
-    Ok(block.header.timestamp)
-  }
-
-  // Checks if the log is stale, i.e. if the event is outside of the challenge period.
-  // If the block timestamp is missing, it is fetched from the block number.
-  // If the block number is also missing, an error is returned.
-  async fn is_log_stale(
-    &self,
-    log: &Log<ScribeOptimistic::OpPoked>,
-    challenge_period: u64,
-  ) -> ContractResult<bool> {
-    // Check if the poke is within the challenge period
-    let event_timestamp = match log.block_timestamp {
-      Some(timestamp) => timestamp,
-      None => {
-        if log.block_number.is_none() {
-          return Err(ContractError::NoBlockNumberInLog(log.transaction_hash));
-        }
-
-        self
-          .get_timestamp_from_block(log.block_number.unwrap())
-          .await?
-      }
-    };
-
-    let current_timestamp = chrono::Utc::now().timestamp() as u64;
-    log::debug!(
-      "ScribeEventsProcessor[{:?}] OpPoked, event_timestamp: {:?}, current_timestamp: {:?}",
-      self.contract.address(),
-      event_timestamp,
-      current_timestamp
-    );
-
-    Ok(current_timestamp - event_timestamp > challenge_period)
-  }
 }
 
 impl ScribeContract for ScribeContractInstance {
@@ -291,7 +269,7 @@ impl ScribeContract for ScribeContractInstance {
   /// Challenges given `OpPoked` event with given `schnorr_data`.
   /// Executes `opChallenge` method on the contract and returns transaction hash if everything worked well.
   async fn challenge(&self, schnorr_data: SchnorrData) -> ContractResult<TxHash> {
-    match self.challenge_with_private(&schnorr_data).await {
+    match self.challenge_with_flashbots(&schnorr_data).await {
       Ok(tx_hash) => return Ok(tx_hash),
       Err(ContractError::MissingPrivateProvider { address }) => {
         log::warn!(
@@ -332,9 +310,4 @@ impl ScribeContract for ScribeContractInstance {
 
     Ok(!self.is_signature_valid(op_poked_log.data().clone()).await?)
   }
-
-  // /// Returns a new provider (clone) with the same signer.
-  // fn get_cloned_provider(&self) -> Arc<RetryProviderWithSigner> {
-  //   self.contract.provider().clone()
-  // }
 }

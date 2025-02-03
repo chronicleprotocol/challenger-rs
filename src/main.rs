@@ -26,7 +26,7 @@ use log::{error, info};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use metrics_process::Collector;
 use scribe::{
-  contract::ScribeContractInstance, metrics, provider::EthereumPollProvider, Event, Poller,
+  contract::ScribeContractInstance, metrics, provider::EthereumPollProvider, Event, PollerBuilder,
   ScribeEventsProcessor,
 };
 use std::{
@@ -145,11 +145,8 @@ async fn main() -> Result<()> {
 
   let provider = Arc::new(
     ProviderBuilder::new()
-      // Add gas automatic gas field completion
-      .with_recommended_fillers()
       // Add chain id request from rpc
       .filler(ChainIdFiller::new(args.chain_id))
-      // .filler(nonce_manager.clone())
       // Add default signer
       .wallet(signer.clone())
       .on_client(client),
@@ -166,8 +163,6 @@ async fn main() -> Result<()> {
 
       Some(Arc::new(
         ProviderBuilder::new()
-          // Add gas automatic gas field completion
-          .with_recommended_fillers()
           // Add chain id request from rpc
           .filler(ChainIdFiller::new(args.chain_id))
           // .filler(nonce_manager.clone())
@@ -222,7 +217,7 @@ async fn main() -> Result<()> {
 
     // Create event processor for each address
     let (mut event_processor, tx) =
-      ScribeEventsProcessor::new(scribe_contract, cancellation_token.clone());
+      ScribeEventsProcessor::new(scribe_contract, cancellation_token.clone(), None);
 
     // Run event distributor process
     set.spawn(async move {
@@ -233,15 +228,14 @@ async fn main() -> Result<()> {
     processors.insert(*address, tx);
   }
 
-  // Create events listener
-  let mut poller = Poller::new(
-    signer.default_signer().address(),
-    processors,
-    cancellation_token.clone(),
-    EthereumPollProvider::new(provider.clone()),
-    30,
-    args.from_block,
-  );
+  // Create new poller
+  let mut poller = PollerBuilder::builder()
+    .with_signer_address(signer.default_signer().address())
+    .with_handler_channels(processors)
+    .with_cancellation_token(cancellation_token.clone())
+    .with_from_block(args.from_block)
+    .with_poll_interval(Duration::from_secs(30))
+    .build(EthereumPollProvider::new(provider.clone()));
 
   // Run events poller process
   set.spawn(async move {

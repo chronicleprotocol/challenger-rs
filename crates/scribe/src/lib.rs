@@ -20,7 +20,7 @@ mod event_processor;
 pub use event_processor::ScribeEventsProcessor;
 
 mod events_poller;
-pub use events_poller::Poller;
+pub use events_poller::{Poller, PollerBuilder};
 
 mod event;
 pub use event::Event;

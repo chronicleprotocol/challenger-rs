@@ -16,15 +16,11 @@ use alloy::{
   },
   rpc::client::ClientBuilder,
   signers::{local::PrivateKeySigner, SignerSync},
-  transports::{
-    http::{reqwest::Url, Client, Http},
-    layers::RetryBackoffLayer,
-    Transport,
-  },
+  transports::{http::reqwest::Url, layers::RetryBackoffLayer},
 };
 use futures_util::future::join_all;
 use scribe::{
-  contract::ScribeContractInstance, provider::EthereumPollProvider, Event, Poller,
+  contract::ScribeContractInstance, provider::EthereumPollProvider, Event, PollerBuilder,
   ScribeEventsProcessor,
 };
 use scribe_optimistic::{
@@ -62,8 +58,7 @@ type AnvilProvider = Arc<
       >,
       NonceFiller<CachedNonceManager>,
     >,
-    RootProvider<Http<Client>>,
-    Http<Client>,
+    RootProvider,
     Ethereum,
   >,
 >;
@@ -153,7 +148,7 @@ async fn challenge_contract() {
 
   // Increase current block count to move away from poller initialisation block
   anvil_provider
-    .anvil_mine(Some(U256::from(1)), Some(U256::from(1)))
+    .anvil_mine(Some(1), Some(1))
     .await
     .expect("Failed to mine");
 
@@ -181,7 +176,7 @@ async fn challenge_contract() {
 
   // Mine at least one block to ensure log is processed
   anvil_provider
-    .anvil_mine(Some(U256::from(1)), Some(U256::from(1)))
+    .anvil_mine(Some(1), Some(1))
     .await
     .expect("Failed to mine");
 
@@ -286,7 +281,7 @@ async fn dont_challenge_outside_challenge_period() {
 
   // Increase current block count to move away from poller initialisation block
   anvil_provider
-    .anvil_mine(Some(U256::from(1)), Some(U256::from(1)))
+    .anvil_mine(Some(1), Some(1))
     .await
     .expect("Failed to mine");
 
@@ -304,7 +299,7 @@ async fn dont_challenge_outside_challenge_period() {
 
   // Mine at least one block to ensure log is processed
   anvil_provider
-    .anvil_mine(Some(U256::from(1)), Some(U256::from(1)))
+    .anvil_mine(Some(1), Some(1))
     .await
     .expect("Failed to mine");
 
@@ -367,8 +362,6 @@ async fn create_anvil_instances(
 
   let anvil_provider = Arc::new(
     ProviderBuilder::new()
-      // .with_cached_nonce_management()
-      .with_recommended_fillers()
       .wallet(signer.clone())
       .filler(ChainIdFiller::new(Some(31337)))
       .filler(NonceFiller::<CachedNonceManager>::default())
@@ -390,7 +383,7 @@ async fn create_anvil_instances(
     .await
     .expect("Failed to set auto mine");
   anvil_provider
-    .anvil_mine(Some(U256::from(3)), Some(U256::from(3)))
+    .anvil_mine(Some(3), Some(3))
     .await
     .expect("Failed to mine");
   anvil_provider
@@ -401,11 +394,11 @@ async fn create_anvil_instances(
   (anvil, anvil_provider, signer)
 }
 
-async fn deploy_scribe<P: Provider<T, N>, T: Clone + Transport, N: Network>(
+async fn deploy_scribe<P: Provider<N>, N: Network>(
   provider: P,
   signer: EthereumWallet,
   challenge_period: u16,
-) -> ScribeOptimisticInstance<T, P, N> {
+) -> ScribeOptimisticInstance<(), P, N> {
   // deploy scribe instance
   let initial_authed = signer.default_signer().address();
   // let private_key = signer.
@@ -481,7 +474,6 @@ async fn start_event_listener(
 
   let provider = Arc::new(
     ProviderBuilder::new()
-      .with_recommended_fillers()
       .filler(ChainIdFiller::new(Some(31337)))
       .wallet(signer.clone())
       .on_client(client),
@@ -497,7 +489,8 @@ async fn start_event_listener(
     let contract =
       ScribeContractInstance::new(*address, provider.clone(), Some(flashbot_provider.clone()));
 
-    let (mut event_distributor, tx) = ScribeEventsProcessor::new(contract, cancel_token.clone());
+    let (mut event_distributor, tx) =
+      ScribeEventsProcessor::new(contract, cancel_token.clone(), None);
 
     // Run event distributor process
     set.spawn(async move {
@@ -506,15 +499,13 @@ async fn start_event_listener(
     // Storing event processor channel to send events to it.
     processors.insert(address.clone(), tx);
   }
-  // Create events listener
-  let mut poller = Poller::new(
-    signer.default_signer().address(),
-    processors,
-    cancel_token.clone(),
-    EthereumPollProvider::new(provider.clone()),
-    1,
-    None,
-  );
+
+  let mut poller = PollerBuilder::builder()
+    .with_signer_address(signer.default_signer().address())
+    .with_handler_channels(processors)
+    .with_cancellation_token(cancel_token.clone())
+    .with_poll_interval(Duration::from_secs(1))
+    .build(EthereumPollProvider::new(provider.clone()));
 
   // Run events listener process
   set.spawn(async move {
@@ -547,7 +538,7 @@ async fn poll_balance_is_zero(
       return true;
     }
     anvil_provider
-      .anvil_mine(Some(U256::from(1)), Some(U256::from(1)))
+      .anvil_mine(Some(1), Some(1))
       .await
       .expect("Failed to mine");
     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
@@ -558,7 +549,7 @@ async fn poll_balance_is_zero(
 async fn make_invalid_op_poke(
   age: u64,
   private_key: &str,
-  scribe_optimistic: &ScribeOptimisticInstance<Http<Client>, AnvilProvider, Ethereum>,
+  scribe_optimistic: &ScribeOptimisticInstance<(), AnvilProvider, Ethereum>,
 ) {
   let poke_data: IScribe::PokeData = IScribe::PokeData {
     val: 10,

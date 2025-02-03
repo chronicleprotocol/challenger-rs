@@ -9,10 +9,6 @@ use alloy::{
     Identity, Provider, RootProvider,
   },
   rpc::types::{Filter, Log},
-  transports::{
-    http::{Client, Http},
-    layers::RetryBackoffService,
-  },
 };
 
 use crate::error::PollProviderResult;
@@ -29,14 +25,36 @@ pub type FullHTTPRetryProviderWithSigner = FillProvider<
     >,
     WalletFiller<EthereumWallet>,
   >,
-  RootProvider<RetryBackoffService<Http<Client>>>,
-  RetryBackoffService<Http<Client>>,
+  RootProvider,
   Ethereum,
 >;
+
+// // helper function to create a new provider with a random private key
+// #[cfg(test)]
+// pub(crate) fn new_provider(url: &str) -> Arc<FullHTTPRetryProviderWithSigner> {
+//   use alloy::{
+//     providers::ProviderBuilder, rpc::client::ClientBuilder, signers::local::PrivateKeySigner,
+//     transports::layers::RetryBackoffLayer,
+//   };
+
+//   let client = ClientBuilder::default()
+//     .layer(RetryBackoffLayer::new(15, 200, 300))
+//     .http(url.parse().unwrap());
+
+//   Arc::new(
+//     ProviderBuilder::new()
+//       // Add chain id request from rpc
+//       .filler(ChainIdFiller::new(Some(1)))
+//       // Add default signer
+//       .wallet(EthereumWallet::from(PrivateKeySigner::random()))
+//       .on_client(client),
+//   )
+// }
 
 /// PollProvider is a trait that defines the interface for a polling events from
 /// the Ethereum network or any other network.
 #[allow(async_fn_in_trait)]
+#[cfg_attr(test, mockall::automock)]
 pub trait PollProvider {
   /// Get logs from the network with a filter.
   async fn get_logs(&self, filter: &Filter) -> PollProviderResult<Vec<Log>>;
