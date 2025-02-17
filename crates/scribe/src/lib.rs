@@ -14,6 +14,17 @@
 //  along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 pub mod contract;
-pub mod events_handler;
-pub mod events_listener;
+pub mod error;
+
+mod event_processor;
+pub use event_processor::ScribeEventsProcessor;
+
+mod events_poller;
+pub use events_poller::{Poller, PollerBuilder};
+
+mod event;
+pub use event::Event;
+
 pub mod metrics;
+
+pub mod provider;

@@ -37,11 +37,8 @@ pub fn inc_errors_counter(address: Address, error: &str) {
 }
 
 /// `inc_challenge_counter` increments the challenges counter for given `address` and `tx` hash.
-pub fn inc_challenge_counter(address: Address, flashbots: bool) {
-  let labels = [
-    ("address", format!("{:?}", address)),
-    ("flashbots", format!("{:?}", flashbots)),
-  ];
+pub fn inc_challenge_counter(address: Address) {
+  let labels = [("address", format!("{:?}", address))];
   counter!(CHALLENGE_COUNTER, &labels).increment(1);
 }
 
