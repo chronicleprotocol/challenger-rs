@@ -330,14 +330,14 @@ mod tests {
       ..Default::default()
     };
 
-    assert_eq!(contract.is_log_stale(&log, 1).await.unwrap(), true);
+    assert!(contract.is_log_stale(&log, 1).await.unwrap());
 
     let log = Log {
       block_number: Some(1),
       block_timestamp: Some(now - 50),
       ..Default::default()
     };
-    assert_eq!(contract.is_log_stale(&log, 100).await.unwrap(), false);
+    assert!(!contract.is_log_stale(&log, 100).await.unwrap());
 
     // empty block number returns error
     let log = Log {
