@@ -29,27 +29,27 @@ pub type FullHTTPRetryProviderWithSigner = FillProvider<
   Ethereum,
 >;
 
-// // helper function to create a new provider with a random private key
-// #[cfg(test)]
-// pub(crate) fn new_provider(url: &str) -> Arc<FullHTTPRetryProviderWithSigner> {
-//   use alloy::{
-//     providers::ProviderBuilder, rpc::client::ClientBuilder, signers::local::PrivateKeySigner,
-//     transports::layers::RetryBackoffLayer,
-//   };
+// helper function to create a new provider with a random private key
+#[cfg(test)]
+pub(crate) fn new_provider(url: &str) -> Arc<FullHTTPRetryProviderWithSigner> {
+  use alloy::{
+    providers::ProviderBuilder, rpc::client::ClientBuilder, signers::local::PrivateKeySigner,
+    transports::layers::RetryBackoffLayer,
+  };
 
-//   let client = ClientBuilder::default()
-//     .layer(RetryBackoffLayer::new(15, 200, 300))
-//     .http(url.parse().unwrap());
+  let client = ClientBuilder::default()
+    .layer(RetryBackoffLayer::new(15, 200, 300))
+    .http(url.parse().unwrap());
 
-//   Arc::new(
-//     ProviderBuilder::new()
-//       // Add chain id request from rpc
-//       .filler(ChainIdFiller::new(Some(1)))
-//       // Add default signer
-//       .wallet(EthereumWallet::from(PrivateKeySigner::random()))
-//       .on_client(client),
-//   )
-// }
+  Arc::new(
+    ProviderBuilder::new()
+      // Add chain id request from rpc
+      .filler(ChainIdFiller::new(Some(1)))
+      // Add default signer
+      .wallet(EthereumWallet::from(PrivateKeySigner::random()))
+      .on_client(client),
+  )
+}
 
 /// PollProvider is a trait that defines the interface for a polling events from
 /// the Ethereum network or any other network.

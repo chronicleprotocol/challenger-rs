@@ -194,6 +194,7 @@ impl ScribeContractInstance {
     Ok(tx)
   }
 
+  // black magic to build a transaction for flashbots rpc...
   async fn challenge_with_flashbots(&self, schnorr_data: &SchnorrData) -> ContractResult<TxHash> {
     let Some(private_provider) = self.private_provider.clone() else {
       return Err(ContractError::MissingPrivateProvider {
@@ -309,5 +310,41 @@ impl ScribeContract for ScribeContractInstance {
     }
 
     Ok(!self.is_signature_valid(op_poked_log.data().clone()).await?)
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::provider::new_provider;
+
+  #[tokio::test]
+  async fn test_is_log_stale() {
+    let provider = new_provider("http://localhost:8545");
+    let contract = ScribeContractInstance::new(Address::random(), provider.clone(), None);
+
+    let now = chrono::Utc::now().timestamp() as u64;
+    let log = Log {
+      block_number: Some(1),
+      block_timestamp: Some(now - 100),
+      ..Default::default()
+    };
+
+    assert_eq!(contract.is_log_stale(&log, 1).await.unwrap(), true);
+
+    let log = Log {
+      block_number: Some(1),
+      block_timestamp: Some(now - 50),
+      ..Default::default()
+    };
+    assert_eq!(contract.is_log_stale(&log, 100).await.unwrap(), false);
+
+    // empty block number returns error
+    let log = Log {
+      block_number: None,
+      block_timestamp: None,
+      ..Default::default()
+    };
+    assert!(contract.is_log_stale(&log, 100).await.is_err());
   }
 }

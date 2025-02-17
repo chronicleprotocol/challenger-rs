@@ -378,7 +378,7 @@ mod tests {
 
   #[tokio::test]
   async fn test_proper_logs_sends_to_channels() {
-    let deserialized: Log = serde_json::from_str(&LOG).unwrap();
+    let deserialized: Log = serde_json::from_str(LOG).unwrap();
 
     let mut provider = MockPollProvider::new();
     // Have to be called only once.
@@ -388,7 +388,7 @@ mod tests {
 
     provider
       .expect_get_block_number()
-      .returning(move || Ok(BLOCK_NUMBER.clone()));
+      .returning(move || Ok(BLOCK_NUMBER));
 
     let mut addresses: HashMap<Address, Sender<Event>> = HashMap::new();
     let (tx, mut rx) = tokio::sync::mpsc::channel(1);
@@ -412,7 +412,7 @@ mod tests {
 
   #[tokio::test]
   async fn test_send_event_to_process() {
-    let deserialized: Log = serde_json::from_str(&LOG).unwrap();
+    let deserialized: Log = serde_json::from_str(LOG).unwrap();
 
     // New channel for address
     let (tx, mut rx) = tokio::sync::mpsc::channel(1);
@@ -435,7 +435,7 @@ mod tests {
   #[tokio::test]
   #[should_panic]
   async fn test_send_event_to_process_panics_on_unknown_address() {
-    let deserialized: Log = serde_json::from_str(&LOG).unwrap();
+    let deserialized: Log = serde_json::from_str(LOG).unwrap();
 
     // should panic with no channel found for event address
     PollerBuilder::builder()
@@ -500,7 +500,7 @@ mod tests {
 				"logIndex": "0x86",
 				"removed": false
 			}"#;
-    let deserialized: Log = serde_json::from_str(&invalid_log).unwrap();
+    let deserialized: Log = serde_json::from_str(invalid_log).unwrap();
     let log = deserialized.clone();
 
     let mut provider = MockPollProvider::new();

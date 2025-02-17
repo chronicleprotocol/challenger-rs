@@ -331,7 +331,7 @@ mod tests {
 
     scribe.expect_clone().return_once(move || scribe_clone);
 
-    let log: Log = serde_json::from_str(&LOG).unwrap();
+    let log: Log = serde_json::from_str(LOG).unwrap();
     let poke: Log<ScribeOptimistic::OpPoked> = log.log_decode().unwrap();
 
     let duration = Duration::from_millis(5);
@@ -368,7 +368,7 @@ mod tests {
 
     scribe.expect_clone().return_once(move || scribe_clone);
 
-    let log: Log = serde_json::from_str(&LOG).unwrap();
+    let log: Log = serde_json::from_str(LOG).unwrap();
     let poke: Log<ScribeOptimistic::OpPoked> = log.log_decode().unwrap();
 
     let duration = Duration::from_millis(5);
@@ -404,7 +404,7 @@ mod tests {
 				"removed": false
 			}
       "#;
-    let log: Log = serde_json::from_str(&challenge).unwrap();
+    let log: Log = serde_json::from_str(challenge).unwrap();
     let event = Event::try_from(log).unwrap();
 
     let cancel = CancellationToken::new();
@@ -425,7 +425,7 @@ mod tests {
       .expect_is_op_poke_challangeble()
       .returning(|_, _| Ok(false));
 
-    let log: Log = serde_json::from_str(&LOG).unwrap();
+    let log: Log = serde_json::from_str(LOG).unwrap();
     let event = Event::try_from(log).unwrap();
 
     let (mut processor, _) = ScribeEventsProcessor::new(scribe, CancellationToken::new(), None);
@@ -457,7 +457,7 @@ mod tests {
       .returning(|_, _| Ok(true));
     scribe.expect_clone().return_once(move || scribe_clone);
 
-    let log: Log = serde_json::from_str(&LOG).unwrap();
+    let log: Log = serde_json::from_str(LOG).unwrap();
     let event = Event::try_from(log).unwrap();
 
     let duration = Duration::from_millis(5);
@@ -531,7 +531,7 @@ mod tests {
 
     let cancel = CancellationToken::new();
 
-    let log: Log = serde_json::from_str(&LOG).unwrap();
+    let log: Log = serde_json::from_str(LOG).unwrap();
     let event = Event::try_from(log).unwrap();
 
     let duration = Duration::from_millis(5);

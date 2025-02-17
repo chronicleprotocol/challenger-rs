@@ -74,7 +74,7 @@ mod tests {
 			"removed": false
 		}"#;
 
-    let deserialized: Log = serde_json::from_str(&serialized).unwrap();
+    let deserialized: Log = serde_json::from_str(serialized).unwrap();
     let event = Event::try_from(deserialized);
 
     assert!(matches!(event, Err(ContractError::UnknownTopic0 { .. })));
@@ -91,7 +91,7 @@ mod tests {
 			"removed": false
 		}"#;
 
-    let deserialized: Log = serde_json::from_str(&serialized).unwrap();
+    let deserialized: Log = serde_json::from_str(serialized).unwrap();
     let event = Event::try_from(deserialized);
 
     assert!(matches!(
@@ -118,7 +118,7 @@ mod tests {
 				"removed": false
 			}"#;
 
-    let deserialized: Log = serde_json::from_str(&serialized).unwrap();
+    let deserialized: Log = serde_json::from_str(serialized).unwrap();
     let event = Event::try_from(deserialized).unwrap();
 
     assert!(matches!(event, Event::OpPoked(_)));
@@ -148,7 +148,7 @@ mod tests {
 			"removed": false
 		}"#;
 
-    let deserialized: Log = serde_json::from_str(&serialized).unwrap();
+    let deserialized: Log = serde_json::from_str(serialized).unwrap();
     let event = Event::try_from(deserialized).unwrap();
 
     assert!(matches!(event, Event::OpPokeChallengedSuccessfully(_)));
