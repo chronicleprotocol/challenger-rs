@@ -251,17 +251,15 @@ impl ScribeContract for ScribeContractInstance {
 
   /// Returns challenge period from ScribeOptimistic smart contract deployed to `address`.
   async fn get_challenge_period(&self) -> ContractResult<u16> {
-    Ok(
-      self
-        .contract
-        .opChallengePeriod()
-        .call()
-        .await
-        .map_err(|e| ContractError::AlloyContractError {
-          address: *self.address(),
-          source: e,
-        })?,
-    )
+    self
+      .contract
+      .opChallengePeriod()
+      .call()
+      .await
+      .map_err(|e| ContractError::AlloyContractError {
+        address: *self.address(),
+        source: e,
+      })
   }
 
   /// Challenges given `OpPoked` event with given `schnorr_data`.

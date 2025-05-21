@@ -123,6 +123,7 @@ pub type PollerResult<T, E = PollerError> = core::result::Result<T, E>;
 
 /// Error when polling events from chain.
 #[derive(thiserror::Error, Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum PollerError {
   #[error("RPC transport error: {0}")]
   RpcError(#[from] RpcError<TransportErrorKind>),

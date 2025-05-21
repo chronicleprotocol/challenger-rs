@@ -22,7 +22,7 @@ const CHALLENGE_COUNTER: &str = "challenger_challenges_total";
 
 /// `set_last_scanned_block` sets the last scanned block for given `address` and `from` account.
 pub fn set_last_scanned_block(from: Address, block: i64) {
-  let labels = [(("from"), format!("{:?}", from))];
+  let labels = [(("from"), format!("{from:?}"))];
   gauge!(LAST_SCANNED_BLOCK_GAUGE, &labels).set(block as f64);
 }
 
@@ -30,7 +30,7 @@ pub fn set_last_scanned_block(from: Address, block: i64) {
 pub fn inc_errors_counter(address: Address, error: &str) {
   // TODO: Use it...
   let labels = [
-    ("address", format!("{:?}", address)),
+    ("address", format!("{address:?}")),
     ("error", String::from(error)),
   ];
   counter!(ERRORS_COUNTER, &labels).increment(1);
@@ -38,7 +38,7 @@ pub fn inc_errors_counter(address: Address, error: &str) {
 
 /// `inc_challenge_counter` increments the challenges counter for given `address` and `tx` hash.
 pub fn inc_challenge_counter(address: Address) {
-  let labels = [("address", format!("{:?}", address))];
+  let labels = [("address", format!("{address:?}"))];
   counter!(CHALLENGE_COUNTER, &labels).increment(1);
 }
 
