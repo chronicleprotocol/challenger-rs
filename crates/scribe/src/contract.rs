@@ -69,18 +69,18 @@ pub trait ScribeContract: Send + Sync {
 
 /// ScribeOptimisticProviderInstance is a real implementation of ScribeOptimisticProvider based on raw JSON-RPC calls.
 #[derive(Debug, Clone)]
-pub struct ScribeContractInstance {
+pub struct ScribeContractInstance<P: Provider> {
   // Contract based on public provider.
-  contract: ScribeOptimisticInstance<Arc<FullHTTPRetryProviderWithSigner>>,
+  contract: ScribeOptimisticInstance<P>,
   // public_provider: Arc<RetryProviderWithSigner>,
   private_provider: Option<Arc<FullHTTPRetryProviderWithSigner>>,
 }
 
-impl ScribeContractInstance {
+impl<P: Provider> ScribeContractInstance<P> {
   /// Creates a new ScribeOptimisticInstance
   pub fn new(
     address: Address,
-    public_provider: Arc<FullHTTPRetryProviderWithSigner>,
+    public_provider: P,
     private_provider: Option<Arc<FullHTTPRetryProviderWithSigner>>,
   ) -> Self {
     Self {
@@ -243,7 +243,7 @@ impl ScribeContractInstance {
   }
 }
 
-impl ScribeContract for ScribeContractInstance {
+impl<P: Provider> ScribeContract for ScribeContractInstance<P> {
   /// Returns the address of the contract.
   fn address(&self) -> &Address {
     self.contract.address()
