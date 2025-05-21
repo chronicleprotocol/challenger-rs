@@ -10,7 +10,7 @@ members = ["crates/*"]
 
 [workspace.dependencies]
 scribe = { path = "./crates/scribe" }
-alloy = { version = "0.11", features = ["full", "signer-keystore", "node-bindings", "rpc-types-mev"] }
+alloy = { version = "1.0", features = ["full", "signer-keystore", "node-bindings", "rpc-types-mev"] }
 chrono = "0.4.38"
 env_logger = "0.11.3"
 eyre = "0.6.8"
