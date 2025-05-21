@@ -45,7 +45,7 @@ pub struct ScribeEventsProcessor<C: ScribeContract> {
   rx: Receiver<Event>,
 }
 
-impl<C: ScribeContract> ScribeEventsProcessor<C> {
+impl<C: ScribeContract + Clone + 'static> ScribeEventsProcessor<C> {
   /// Creates a new `ScribeEventsProcessor` instance and returns it along with a sender channel to send events to it.
   pub fn new(
     scribe_contract: C,

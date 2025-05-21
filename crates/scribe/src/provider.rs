@@ -47,7 +47,7 @@ pub(crate) fn new_provider(url: &str) -> Arc<FullHTTPRetryProviderWithSigner> {
       .filler(ChainIdFiller::new(Some(1)))
       // Add default signer
       .wallet(EthereumWallet::from(PrivateKeySigner::random()))
-      .on_client(client),
+      .connect_client(client),
   )
 }
 

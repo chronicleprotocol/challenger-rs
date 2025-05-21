@@ -19,7 +19,7 @@ use alloy::{
   eips::eip2718::Encodable2718,
   primitives::{Address, TxHash},
   providers::Provider,
-  rpc::types::{BlockTransactionsKind, Log},
+  rpc::types::Log,
   sol,
 };
 
@@ -43,7 +43,7 @@ sol! {
 const TX_CONFIRMATION_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// This trait provides methods required for `challenger` to interact with the ScribeOptimistic smart contract.
-pub trait ScribeContract: Clone + Send + Sync + 'static {
+pub trait ScribeContract: Send + Sync {
   /// Returns the address of the contract.
   fn address(&self) -> &Address;
 
@@ -71,7 +71,7 @@ pub trait ScribeContract: Clone + Send + Sync + 'static {
 #[derive(Debug, Clone)]
 pub struct ScribeContractInstance {
   // Contract based on public provider.
-  contract: ScribeOptimisticInstance<(), Arc<FullHTTPRetryProviderWithSigner>>,
+  contract: ScribeOptimisticInstance<Arc<FullHTTPRetryProviderWithSigner>>,
   // public_provider: Arc<RetryProviderWithSigner>,
   private_provider: Option<Arc<FullHTTPRetryProviderWithSigner>>,
 }
@@ -127,7 +127,7 @@ impl ScribeContractInstance {
     let Some(block) = self
       .contract
       .provider()
-      .get_block(block_number.into(), BlockTransactionsKind::Hashes)
+      .get_block(block_number.into())
       .await?
     else {
       return Err(ContractError::FailedToFetchBlock(block_number));
@@ -150,8 +150,7 @@ impl ScribeContractInstance {
       .map_err(|e| ContractError::AlloyContractError {
         address: *self.address(),
         source: e,
-      })?
-      ._0;
+      })?;
 
     let acceptable = self
       .contract
@@ -161,8 +160,7 @@ impl ScribeContractInstance {
       .map_err(|e| ContractError::AlloyContractError {
         address: *self.address(),
         source: e,
-      })?
-      ._0;
+      })?;
 
     Ok(acceptable)
   }
@@ -253,18 +251,15 @@ impl ScribeContract for ScribeContractInstance {
 
   /// Returns challenge period from ScribeOptimistic smart contract deployed to `address`.
   async fn get_challenge_period(&self) -> ContractResult<u16> {
-    Ok(
-      self
-        .contract
-        .opChallengePeriod()
-        .call()
-        .await
-        .map_err(|e| ContractError::AlloyContractError {
-          address: *self.address(),
-          source: e,
-        })?
-        ._0,
-    )
+    self
+      .contract
+      .opChallengePeriod()
+      .call()
+      .await
+      .map_err(|e| ContractError::AlloyContractError {
+        address: *self.address(),
+        source: e,
+      })
   }
 
   /// Challenges given `OpPoked` event with given `schnorr_data`.

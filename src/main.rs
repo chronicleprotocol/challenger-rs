@@ -149,7 +149,7 @@ async fn main() -> Result<()> {
       .filler(ChainIdFiller::new(args.chain_id))
       // Add default signer
       .wallet(signer.clone())
-      .on_client(client),
+      .connect_client(client),
   );
 
   // Genrerating flashbot provider if provided
@@ -168,7 +168,7 @@ async fn main() -> Result<()> {
           // .filler(nonce_manager.clone())
           // Add default signer
           .wallet(signer.clone())
-          .on_client(flashbot_client),
+          .connect_client(flashbot_client),
       ))
     }
   };
