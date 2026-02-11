@@ -216,7 +216,9 @@ async fn main() -> Result<()> {
         "Invalid HTTP_PORT value, using default {}: {}",
         DEFAULT_METRICS_PORT, e
       );
-      DEFAULT_METRICS_PORT.parse().unwrap()
+      DEFAULT_METRICS_PORT
+        .parse()
+        .expect("DEFAULT_METRICS_PORT constant is invalid")
     });
   let addr = SocketAddr::from(([0, 0, 0, 0], port));
 
