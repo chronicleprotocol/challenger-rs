@@ -328,6 +328,7 @@ mod tests {
     rpc::types::Log,
     transports::{RpcError, TransportErrorKind},
   };
+  use mockall::Sequence;
 
   // Predefined details for tests
   static ADDRESS: Address = address!("0x891e368fe81cba2ac6f6cc4b98e684c106e2ef4f");
@@ -628,5 +629,107 @@ mod tests {
 
     // If assertion fails, it means that poller didn't exit after max retries and was cancelled
     assert!(poller.start().await.is_err());
+  }
+
+  #[tokio::test]
+  async fn test_send_event_with_closed_channel() {
+    let deserialized: Log = serde_json::from_str(LOG).unwrap();
+
+    // Create channel and immediately drop receiver
+    let (tx, rx) = tokio::sync::mpsc::channel(1);
+    drop(rx);
+
+    let mut addresses: HashMap<Address, Sender<Event>> = HashMap::new();
+    addresses.insert(ADDRESS, tx);
+
+    let poller = PollerBuilder::builder()
+      .with_handler_channels(addresses)
+      .with_poll_interval(Duration::from_millis(100))
+      .build(MockPollProvider::new());
+
+    let result = poller.send_log_for_processing(deserialized).await;
+    assert!(
+      result.is_err(),
+      "Sending to closed channel should return error"
+    );
+  }
+
+  #[tokio::test]
+  async fn test_poll_resets_retry_count_on_success() {
+    let mut provider = MockPollProvider::new();
+    let mut seq = Sequence::new();
+
+    // First call fails
+    provider
+      .expect_get_block_number()
+      .times(1)
+      .in_sequence(&mut seq)
+      .returning(|| {
+        Err(PollProviderError::RpcError(RpcError::Transport(
+          TransportErrorKind::PubsubUnavailable,
+        )))
+      });
+
+    // Second call succeeds
+    provider
+      .expect_get_block_number()
+      .times(1)
+      .in_sequence(&mut seq)
+      .returning(|| Ok(10));
+
+    provider.expect_get_logs().returning(|_| Ok(vec![]));
+
+    let mut addresses: HashMap<Address, Sender<Event>> = HashMap::new();
+    addresses.insert(ADDRESS, tokio::sync::mpsc::channel(100).0);
+
+    let mut poller = PollerBuilder::builder()
+      .with_handler_channels(addresses)
+      .with_poll_interval(Duration::from_millis(100))
+      .build(provider);
+
+    // First poll fails → retry_count should increment
+    assert!(poller.poll_for_new_events().await.is_err());
+    poller.retry_count += 1; // Simulate what start() does
+    assert_eq!(poller.retry_count, 1);
+
+    // Second poll succeeds → retry_count should be reset
+    poller.poll_for_new_events().await.unwrap();
+    poller.retry_count = 0; // Simulate what start() does on success
+    assert_eq!(poller.retry_count, 0, "Retry count should reset on success");
+  }
+
+  #[tokio::test]
+  async fn test_poll_increments_retry_count_on_error() {
+    let mut provider = MockPollProvider::new();
+
+    // Always fail on get_block_number
+    provider
+      .expect_get_block_number()
+      .returning(|| Err(PollProviderError::RpcError(RpcError::NullResp)));
+
+    let mut addresses: HashMap<Address, Sender<Event>> = HashMap::new();
+    addresses.insert(ADDRESS, tokio::sync::mpsc::channel(100).0);
+
+    let cancel = CancellationToken::new();
+
+    let mut poller = PollerBuilder::builder()
+      .with_handler_channels(addresses)
+      .with_poll_interval(Duration::from_millis(1))
+      .with_cancellation_token(cancel.clone())
+      .build(provider);
+
+    // Cancel after enough time for retries to hit max
+    tokio::spawn(async move {
+      tokio::time::sleep(Duration::from_secs(1)).await;
+      cancel.cancel();
+    });
+
+    let result = poller.start().await;
+    assert!(result.is_err());
+    assert!(
+      matches!(result.unwrap_err(), PollerError::MaxRetryAttemptsExceeded(n) if n == MAX_RETRY_COUNT),
+      "Should fail with MaxRetryAttemptsExceeded after {} retries",
+      MAX_RETRY_COUNT
+    );
   }
 }

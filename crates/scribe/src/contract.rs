@@ -149,23 +149,21 @@ impl<P: Provider> ScribeContractInstance<P> {
       self.address()
     );
 
-    let message = self
-      .wrap_contract_error(
-        self
-          .contract
-          .constructPokeMessage(op_poked.pokeData)
-          .call()
-          .await,
-      )?;
+    let message = self.wrap_contract_error(
+      self
+        .contract
+        .constructPokeMessage(op_poked.pokeData)
+        .call()
+        .await,
+    )?;
 
-    let acceptable = self
-      .wrap_contract_error(
-        self
-          .contract
-          .isAcceptableSchnorrSignatureNow(message, op_poked.schnorrData)
-          .call()
-          .await,
-      )?;
+    let acceptable = self.wrap_contract_error(
+      self
+        .contract
+        .isAcceptableSchnorrSignatureNow(message, op_poked.schnorrData)
+        .call()
+        .await,
+    )?;
 
     Ok(acceptable)
   }
@@ -178,13 +176,7 @@ impl<P: Provider> ScribeContractInstance<P> {
     );
 
     let tx = self
-      .wrap_contract_error(
-        self
-          .contract
-          .opChallenge(schnorr_data.clone())
-          .send()
-          .await,
-      )?
+      .wrap_contract_error(self.contract.opChallenge(schnorr_data.clone()).send().await)?
       .with_timeout(Some(TX_CONFIRMATION_TIMEOUT))
       .watch()
       .await
@@ -337,5 +329,100 @@ mod tests {
       ..Default::default()
     };
     assert!(contract.is_log_stale(&log, 100).await.is_err());
+  }
+
+  #[tokio::test]
+  async fn test_is_log_stale_boundary_exactly_at_period() {
+    let provider = new_provider("http://localhost:8545");
+    let contract = ScribeContractInstance::new(Address::random(), provider.clone(), None);
+
+    // Event age exactly equals challenge period → should NOT be stale (uses > not >=)
+    let now = chrono::Utc::now().timestamp() as u64;
+    let challenge_period = 100;
+    let log = Log {
+      block_number: Some(1),
+      block_timestamp: Some(now - challenge_period),
+      ..Default::default()
+    };
+
+    assert!(
+      !contract.is_log_stale(&log, challenge_period).await.unwrap(),
+      "Event exactly at challenge period boundary should NOT be stale (> not >=)"
+    );
+
+    // One second past → should be stale
+    let log = Log {
+      block_number: Some(1),
+      block_timestamp: Some(now - challenge_period - 1),
+      ..Default::default()
+    };
+    assert!(
+      contract.is_log_stale(&log, challenge_period).await.unwrap(),
+      "Event one second past challenge period should be stale"
+    );
+  }
+
+  #[tokio::test]
+  async fn test_is_log_stale_with_block_timestamp_none_and_no_block_number() {
+    let provider = new_provider("http://localhost:8545");
+    let contract = ScribeContractInstance::new(Address::random(), provider.clone(), None);
+
+    // Log with block_timestamp: None and block_number: None → should return NoBlockNumberInLog error
+    let log = Log {
+      block_number: None,
+      block_timestamp: None,
+      ..Default::default()
+    };
+
+    let result = contract.is_log_stale(&log, 100).await;
+    assert!(result.is_err());
+    assert!(
+      matches!(result.unwrap_err(), ContractError::NoBlockNumberInLog(..)),
+      "Should return NoBlockNumberInLog error when both timestamp and block number are None"
+    );
+  }
+
+  #[tokio::test]
+  async fn test_is_log_stale_with_block_timestamp_none_fetches_block() {
+    let provider = new_provider("http://localhost:8545");
+    let contract = ScribeContractInstance::new(Address::random(), provider.clone(), None);
+
+    // Log with block_timestamp: None but valid block_number → tries to fetch block
+    // This will fail with RPC error since no real node is running, verifying the fallback path
+    let log = Log {
+      block_number: Some(1),
+      block_timestamp: None,
+      ..Default::default()
+    };
+
+    let result = contract.is_log_stale(&log, 100).await;
+    // Should fail because there's no real node to fetch the block from
+    assert!(
+      result.is_err(),
+      "Should fail trying to fetch block from non-existent node"
+    );
+  }
+
+  #[tokio::test]
+  async fn test_is_op_poke_challengeable_stale_returns_false() {
+    let provider = new_provider("http://localhost:8545");
+    let contract = ScribeContractInstance::new(Address::random(), provider.clone(), None);
+
+    // Fresh log with old timestamp + short challenge period → stale → returns Ok(false)
+    // without ever calling signature validation
+    let old_timestamp = chrono::Utc::now().timestamp() as u64 - 1000;
+    let log = Log {
+      block_number: Some(1),
+      block_timestamp: Some(old_timestamp),
+      ..Default::default()
+    };
+
+    // Challenge period of 1 second means the event (1000s old) is definitely stale
+    let result = contract.is_op_poke_challengeable(&log, 1).await;
+    assert!(result.is_ok());
+    assert!(
+      !result.unwrap(),
+      "Stale event should return false without calling signature validation"
+    );
   }
 }
