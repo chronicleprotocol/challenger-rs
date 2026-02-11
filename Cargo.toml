@@ -10,21 +10,21 @@ members = ["crates/*"]
 
 [workspace.dependencies]
 scribe = { path = "./crates/scribe" }
-alloy = { version = "1.0", features = ["full", "signer-keystore", "node-bindings", "rpc-types-mev"] }
-chrono = "0.4.38"
-env_logger = "0.11.3"
-eyre = "0.6.8"
-log = { version = "0.4.20", features = ["kv"] }
-metrics = "0.24.1"
-metrics-exporter-prometheus = { version = "0.16.1", features = [
+alloy = { version = "1.6", features = ["full", "signer-keystore", "node-bindings", "rpc-types-mev"] }
+chrono = "0.4.43"
+env_logger = "0.11.9"
+eyre = "0.6.12"
+log = { version = "0.4.29", features = ["kv"] }
+metrics = "0.24.3"
+metrics-exporter-prometheus = { version = "0.18.1", features = [
     "http-listener",
 ] }
-metrics-process = "2.4.0"
-mockall = "0.13.1"
+metrics-process = "2.4.3"
+mockall = "0.14.0"
 tokio = { version = "1", features = ["full"] }
-tokio-util = "0.7.12"
-thiserror = "2.0.11"
-serde_json = "1.0.138"
+tokio-util = "0.7.18"
+thiserror = "2.0.18"
+serde_json = "1.0.149"
 
 [dependencies]
 scribe = { workspace = true }
@@ -39,6 +39,6 @@ metrics-process = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-util = { workspace = true }
 
-clap = { version = "4.3.21", features = ["derive", "env"] }
-rpassword = "7.2.0"
+clap = { version = "4.5.58", features = ["derive", "env"] }
+rpassword = "7.4.0"
 futures-util = "0.3.31"
