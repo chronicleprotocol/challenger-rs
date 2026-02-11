@@ -42,4 +42,3 @@ tokio-util = { workspace = true }
 clap = { version = "4.3.21", features = ["derive", "env"] }
 rpassword = "7.2.0"
 futures-util = "0.3.31"
-testing_logger = "0.1.1"

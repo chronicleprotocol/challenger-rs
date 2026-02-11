@@ -53,7 +53,7 @@ pub trait ScribeContract: Send + Sync {
 
   /// Returns true if given `OpPoked` event is challengeable.
   /// It checks if the event is stale and if the signature is valid.
-  fn is_op_poke_challangeble(
+  fn is_op_poke_challengeable(
     &self,
     op_poked: &Log<ScribeOptimistic::OpPoked>,
     challenge_period: u64,
@@ -89,6 +89,14 @@ impl<P: Provider> ScribeContractInstance<P> {
     }
   }
 
+  /// Helper method to wrap contract errors with address context
+  fn wrap_contract_error<T>(&self, result: Result<T, alloy::contract::Error>) -> ContractResult<T> {
+    result.map_err(|e| ContractError::AlloyContractError {
+      address: *self.address(),
+      source: e,
+    })
+  }
+
   // Checks if the log is stale, i.e. if the event is outside of the challenge period.
   // If the block timestamp is missing, it is fetched from the block number.
   // If the block number is also missing, an error is returned.
@@ -105,9 +113,8 @@ impl<P: Provider> ScribeContractInstance<P> {
           return Err(ContractError::NoBlockNumberInLog(log.transaction_hash));
         }
 
-        self
-          .get_timestamp_from_block(log.block_number.unwrap())
-          .await?
+        let block_number = log.block_number.ok_or(ContractError::MissingBlockNumber)?;
+        self.get_timestamp_from_block(block_number).await?
       }
     };
 
@@ -143,24 +150,22 @@ impl<P: Provider> ScribeContractInstance<P> {
     );
 
     let message = self
-      .contract
-      .constructPokeMessage(op_poked.pokeData)
-      .call()
-      .await
-      .map_err(|e| ContractError::AlloyContractError {
-        address: *self.address(),
-        source: e,
-      })?;
+      .wrap_contract_error(
+        self
+          .contract
+          .constructPokeMessage(op_poked.pokeData)
+          .call()
+          .await,
+      )?;
 
     let acceptable = self
-      .contract
-      .isAcceptableSchnorrSignatureNow(message, op_poked.schnorrData)
-      .call()
-      .await
-      .map_err(|e| ContractError::AlloyContractError {
-        address: *self.address(),
-        source: e,
-      })?;
+      .wrap_contract_error(
+        self
+          .contract
+          .isAcceptableSchnorrSignatureNow(message, op_poked.schnorrData)
+          .call()
+          .await,
+      )?;
 
     Ok(acceptable)
   }
@@ -173,14 +178,13 @@ impl<P: Provider> ScribeContractInstance<P> {
     );
 
     let tx = self
-      .contract
-      .opChallenge(schnorr_data.clone())
-      .send()
-      .await
-      .map_err(|e| ContractError::AlloyContractError {
-        address: *self.address(),
-        source: e,
-      })?
+      .wrap_contract_error(
+        self
+          .contract
+          .opChallenge(schnorr_data.clone())
+          .send()
+          .await,
+      )?
       .with_timeout(Some(TX_CONFIRMATION_TIMEOUT))
       .watch()
       .await
@@ -251,15 +255,7 @@ impl<P: Provider> ScribeContract for ScribeContractInstance<P> {
 
   /// Returns challenge period from ScribeOptimistic smart contract deployed to `address`.
   async fn get_challenge_period(&self) -> ContractResult<u16> {
-    self
-      .contract
-      .opChallengePeriod()
-      .call()
-      .await
-      .map_err(|e| ContractError::AlloyContractError {
-        address: *self.address(),
-        source: e,
-      })
+    self.wrap_contract_error(self.contract.opChallengePeriod().call().await)
   }
 
   /// Challenges given `OpPoked` event with given `schnorr_data`.
@@ -291,7 +287,7 @@ impl<P: Provider> ScribeContract for ScribeContractInstance<P> {
   }
 
   /// Returns true if given `OpPoked` event is challengeable.
-  async fn is_op_poke_challangeble(
+  async fn is_op_poke_challengeable(
     &self,
     op_poked_log: &Log<ScribeOptimistic::OpPoked>,
     challenge_period: u64,

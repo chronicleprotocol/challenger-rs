@@ -20,6 +20,7 @@ use alloy::{
   rpc::types::{Filter, Log},
   sol_types::SolEvent,
 };
+use log::error;
 use tokio::sync::mpsc::Sender;
 use tokio_util::sync::CancellationToken;
 
@@ -207,11 +208,13 @@ impl<P: PollProvider> Poller<P> {
 
     // Send event to the channel
     let Some(tx) = self.handler_channels.get(&event.address()) else {
-      // should never happen !
-      panic!(
-        "Poller: No channel found for address {:?}, skipping",
+      error!(
+        "Poller: No channel found for address {:?}, skipping event",
         &event.address()
       );
+      return Err(PollerError::ChannelNotFound {
+        address: event.address(),
+      });
     };
 
     tx.send(event).await?;
@@ -236,9 +239,12 @@ impl<P: PollProvider> Poller<P> {
       );
 
       for log in logs {
+        // TODO: do we need to process further ?
         if let Err(e) = self.send_log_for_processing(log).await {
           log::error!("Poller: Failed to parse log: {:?}", e);
-        };
+          // Continue processing other logs instead of stopping completely
+          continue;
+        }
       }
     }
 

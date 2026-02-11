@@ -95,7 +95,12 @@ impl<C: ScribeContract + Clone + 'static> ScribeEventsProcessor<C> {
 
         let op_poke_challengeable = self
           .scribe_contract
-          .is_op_poke_challangeble(&log, self.challenge_period.unwrap())
+          .is_op_poke_challengeable(
+            &log,
+            self
+              .challenge_period
+              .expect("challenge_period must be initialized before processing events"),
+          )
           .await?;
 
         log::debug!(
@@ -193,13 +198,13 @@ impl<C: ScribeContract + Clone + 'static> ScribeEventsProcessor<C> {
   }
 
   /// Starts the handling events.
-  pub async fn start(&mut self) {
+  pub async fn start(&mut self) -> ProcessorResult<()> {
     log::debug!(
       "ScribeEventsProcessor[{:?}] Starting new contract handler",
       self.scribe_contract.address()
     );
     // We have to fail if no challenge period is fetched on start
-    self.refresh_challenge_period().await.unwrap();
+    self.refresh_challenge_period().await?;
 
     loop {
       tokio::select! {
@@ -209,7 +214,7 @@ impl<C: ScribeContract + Clone + 'static> ScribeEventsProcessor<C> {
                 "ScribeEventsProcessor[{:?}] Cancellation requested, stopping contract handler",
                 self.scribe_contract.address()
             );
-            return;
+            return Ok(());
         }
         // new [Event] received, process it...
         event = self.rx.recv() => {
@@ -280,7 +285,7 @@ mod tests {
 
       /// Returns true if given `OpPoked` event is challengeable.
       /// It checks if the event is stale and if the signature is valid.
-      async fn is_op_poke_challangeble(
+      async fn is_op_poke_challengeable(
         &self,
         op_poked: &Log<ScribeOptimistic::OpPoked>,
         challenge_period: u64,
@@ -422,7 +427,7 @@ mod tests {
     let mut scribe = MockScribe::new();
     scribe.expect_get_challenge_period().returning(|| Ok(10));
     scribe
-      .expect_is_op_poke_challangeble()
+      .expect_is_op_poke_challengeable()
       .returning(|_, _| Ok(false));
 
     let log: Log = serde_json::from_str(LOG).unwrap();
@@ -453,7 +458,7 @@ mod tests {
     let mut scribe = MockScribe::new();
     scribe.expect_get_challenge_period().returning(|| Ok(10));
     scribe
-      .expect_is_op_poke_challangeble()
+      .expect_is_op_poke_challengeable()
       .returning(|_, _| Ok(true));
     scribe.expect_clone().return_once(move || scribe_clone);
 
@@ -492,7 +497,7 @@ mod tests {
       cancel.cancel();
     });
 
-    processor.start().await;
+    assert!(processor.start().await.is_ok());
     assert!(cancel_clone.is_cancelled());
   }
 
@@ -516,7 +521,7 @@ mod tests {
       .in_sequence(&mut sequence)
       .returning(|| Ok(10));
     scribe
-      .expect_is_op_poke_challangeble()
+      .expect_is_op_poke_challengeable()
       .times(1)
       .in_sequence(&mut sequence)
       .returning(|_, _| Ok(true));
@@ -539,7 +544,7 @@ mod tests {
     let (mut processor, tx) = ScribeEventsProcessor::new(scribe, cancel.clone(), Some(duration));
 
     let handle = tokio::spawn(async move {
-      processor.start().await;
+      processor.start().await.unwrap();
     });
 
     tx.send(event).await.unwrap();
