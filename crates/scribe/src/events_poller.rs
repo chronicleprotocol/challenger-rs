@@ -196,7 +196,7 @@ impl<P: PollProvider> Poller<P> {
     Ok(self.provider.get_logs(&filter).await?)
   }
 
-  // Sends event to the channel by address, if no channel found, panics.
+  // Sends event to the channel by address, if no channel found, returns error.
   async fn send_log_for_processing(&self, log: Log) -> PollerResult<()> {
     let event = Event::try_from(log)?;
 
@@ -440,17 +440,21 @@ mod tests {
   }
 
   #[tokio::test]
-  #[should_panic]
-  async fn test_send_event_to_process_panics_on_unknown_address() {
+  async fn test_send_event_to_process_returns_error_on_unknown_address() {
     let deserialized: Log = serde_json::from_str(LOG).unwrap();
 
-    // should panic with no channel found for event address
-    PollerBuilder::builder()
+    // should return ChannelNotFound error when no channel exists for event address
+    let result = PollerBuilder::builder()
       .with_poll_interval(Duration::from_millis(100))
       .build(MockPollProvider::new())
       .send_log_for_processing(deserialized)
-      .await
-      .unwrap();
+      .await;
+
+    assert!(result.is_err());
+    assert!(
+      matches!(result.unwrap_err(), PollerError::ChannelNotFound { .. }),
+      "Should return ChannelNotFound error for unknown address"
+    );
   }
 
   // query_logs returns error

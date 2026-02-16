@@ -113,6 +113,9 @@ pub enum ProcessorError {
 
   #[error("address {address:?} challenge cancelled after attempt: {attempt}")]
   ChallengeCancelled { address: Address, attempt: u16 },
+
+  #[error("challenge period not initialized for address {address:?}")]
+  ChallengePeriodNotInitialized { address: Address },
 }
 
 /// Dynamic event polling result type.

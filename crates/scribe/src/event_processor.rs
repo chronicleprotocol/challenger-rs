@@ -20,7 +20,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
   contract::{ScribeContract, ScribeOptimistic::OpPoked},
-  error::ProcessorResult,
+  error::{ProcessorError, ProcessorResult},
   event::Event,
   metrics,
 };
@@ -93,14 +93,16 @@ impl<C: ScribeContract + Clone + 'static> ScribeEventsProcessor<C> {
           self.scribe_contract.address()
         );
 
+        let challenge_period =
+          self
+            .challenge_period
+            .ok_or_else(|| ProcessorError::ChallengePeriodNotInitialized {
+              address: *self.scribe_contract.address(),
+            })?;
+
         let op_poke_challengeable = self
           .scribe_contract
-          .is_op_poke_challengeable(
-            &log,
-            self
-              .challenge_period
-              .expect("challenge_period must be initialized before processing events"),
-          )
+          .is_op_poke_challengeable(&log, challenge_period)
           .await?;
 
         log::debug!(
