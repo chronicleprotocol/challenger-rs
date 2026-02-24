@@ -104,6 +104,12 @@ struct Cli {
 
   #[arg(long, help = "Block number to start from")]
   from_block: Option<u64>,
+
+  #[arg(
+    long,
+    help = "Maximum number of blocks to fetch per RPC request. Splits wide ranges into multiple calls."
+  )]
+  max_block_range: Option<u64>,
 }
 
 impl PrivateKeyWallet for Cli {
@@ -265,6 +271,7 @@ async fn main() -> Result<()> {
     .with_handler_channels(processors)
     .with_cancellation_token(cancellation_token.clone())
     .with_from_block(args.from_block)
+    .with_max_block_range(args.max_block_range)
     .with_poll_interval(Duration::from_secs(POLL_INTERVAL_SECS))
     .build(EthereumPollProvider::new(provider.clone()));
 
@@ -354,6 +361,7 @@ mod tests {
       rpc_url: "http://localhost:8545".to_string(),
       flashbot_rpc_url: Some("http://localhost:8545".to_string()),
       from_block: None,
+      max_block_range: None,
     };
 
     let wallet = cli.wallet().unwrap().unwrap();
@@ -376,6 +384,7 @@ mod tests {
       rpc_url: "http://localhost:8545".to_string(),
       flashbot_rpc_url: Some("http://localhost:8545".to_string()),
       from_block: None,
+      max_block_range: None,
     };
 
     let wallet = cli.wallet().unwrap().unwrap();
@@ -405,6 +414,7 @@ mod tests {
       rpc_url: "http://localhost:8545".to_string(),
       flashbot_rpc_url: Some("http://localhost:8545".to_string()),
       from_block: None,
+      max_block_range: None,
     };
 
     let wallet = cli.wallet().unwrap().unwrap();
@@ -431,6 +441,7 @@ mod tests {
       rpc_url: "http://localhost:8545".to_string(),
       flashbot_rpc_url: Some("http://localhost:8545".to_string()),
       from_block: None,
+      max_block_range: None,
     };
 
     let wallet = cli.wallet().unwrap().unwrap();
