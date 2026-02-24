@@ -153,13 +153,11 @@ impl<C: ScribeContract + Clone + 'static> ScribeEventsProcessor<C> {
           );
         }
 
-        _ = tokio::time::sleep(challenge_poke_delay) => {
-          log::debug!(
-            "ScribeEventsProcessor[{:?}] Trying to challenge OpPoked event",
-            &contract.address()
-          );
-
-          match contract.challenge(schnorr_data).await {
+        result = async {
+          tokio::time::sleep(challenge_poke_delay).await;
+          contract.challenge(schnorr_data).await
+        } => {
+          match result {
             Ok(tx_hash) => {
               // Increment the challenge counter
               metrics::inc_challenge_counter(*contract.address());
@@ -177,7 +175,7 @@ impl<C: ScribeContract + Clone + 'static> ScribeEventsProcessor<C> {
                 e
               );
             }
-          };
+          }
         }
       }
     });

@@ -74,6 +74,7 @@ pub struct ScribeContractInstance<P: Provider> {
   contract: ScribeOptimisticInstance<P>,
   // public_provider: Arc<RetryProviderWithSigner>,
   private_provider: Option<Arc<FullHTTPRetryProviderWithSigner>>,
+  signer_address: Address,
 }
 
 impl<P: Provider> ScribeContractInstance<P> {
@@ -82,10 +83,12 @@ impl<P: Provider> ScribeContractInstance<P> {
     address: Address,
     public_provider: P,
     private_provider: Option<Arc<FullHTTPRetryProviderWithSigner>>,
+    signer_address: Address,
   ) -> Self {
     Self {
       contract: ScribeOptimistic::new(address, public_provider),
       private_provider,
+      signer_address,
     }
   }
 
@@ -175,8 +178,30 @@ impl<P: Provider> ScribeContractInstance<P> {
       &schnorr_data
     );
 
+    // Explicitly fetch the pending nonce to avoid the stale "latest" nonce returned by
+    // NonceFiller when the private tx was already included by Flashbots.
+    let nonce = self
+      .contract
+      .provider()
+      .get_transaction_count(self.signer_address)
+      .pending()
+      .await?;
+
+    log::debug!(
+      "Contract[{:?}]: Using pending nonce {} for public fallback tx",
+      self.address(),
+      nonce
+    );
+
     let tx = self
-      .wrap_contract_error(self.contract.opChallenge(schnorr_data.clone()).send().await)?
+      .wrap_contract_error(
+        self
+          .contract
+          .opChallenge(schnorr_data.clone())
+          .nonce(nonce)
+          .send()
+          .await,
+      )?
       .with_timeout(Some(TX_CONFIRMATION_TIMEOUT))
       .watch()
       .await
@@ -226,16 +251,40 @@ impl<P: Provider> ScribeContractInstance<P> {
       pending_tx.tx_hash()
     );
 
-    let tx_hash = pending_tx
+    // Save the hash BEFORE consuming pending_tx into watch()
+    let private_tx_hash = *pending_tx.tx_hash();
+
+    let watch_result = pending_tx
       .with_timeout(Some(TX_CONFIRMATION_TIMEOUT))
       .watch()
-      .await
-      .map_err(|e| ContractError::PendingTransactionError {
-        address: *self.address(),
-        source: e,
-      })?;
+      .await;
 
-    Ok(tx_hash)
+    match watch_result {
+      Ok(tx_hash) => Ok(tx_hash),
+      Err(e) => {
+        // TxWatcher(Timeout) does NOT guarantee the tx was dropped — Flashbots may have
+        // included it. Fetch the receipt before falling back to the public mempool.
+        log::warn!(
+          "Contract[{:?}]: Private tx watch failed ({:?}), checking receipt for {:?}",
+          self.address(),
+          e,
+          private_tx_hash
+        );
+        match private_provider.get_transaction_receipt(private_tx_hash).await {
+          Ok(Some(_receipt)) => {
+            log::info!(
+              "Contract[{:?}]: Private tx confirmed despite watch error, skipping fallback",
+              self.address()
+            );
+            Ok(private_tx_hash)
+          }
+          _ => Err(ContractError::PendingTransactionError {
+            address: *self.address(),
+            source: e,
+          }),
+        }
+      }
+    }
   }
 }
 
@@ -304,7 +353,7 @@ mod tests {
   #[tokio::test]
   async fn test_is_log_stale() {
     let provider = new_provider("http://localhost:8545");
-    let contract = ScribeContractInstance::new(Address::random(), provider.clone(), None);
+    let contract = ScribeContractInstance::new(Address::random(), provider.clone(), None, Address::ZERO);
 
     let now = chrono::Utc::now().timestamp() as u64;
     let log = Log {
@@ -334,7 +383,7 @@ mod tests {
   #[tokio::test]
   async fn test_is_log_stale_boundary_exactly_at_period() {
     let provider = new_provider("http://localhost:8545");
-    let contract = ScribeContractInstance::new(Address::random(), provider.clone(), None);
+    let contract = ScribeContractInstance::new(Address::random(), provider.clone(), None, Address::ZERO);
 
     // Event age exactly equals challenge period → should NOT be stale (uses > not >=)
     let now = chrono::Utc::now().timestamp() as u64;
@@ -365,7 +414,7 @@ mod tests {
   #[tokio::test]
   async fn test_is_log_stale_with_block_timestamp_none_and_no_block_number() {
     let provider = new_provider("http://localhost:8545");
-    let contract = ScribeContractInstance::new(Address::random(), provider.clone(), None);
+    let contract = ScribeContractInstance::new(Address::random(), provider.clone(), None, Address::ZERO);
 
     // Log with block_timestamp: None and block_number: None → should return NoBlockNumberInLog error
     let log = Log {
@@ -385,7 +434,7 @@ mod tests {
   #[tokio::test]
   async fn test_is_log_stale_with_block_timestamp_none_fetches_block() {
     let provider = new_provider("http://localhost:8545");
-    let contract = ScribeContractInstance::new(Address::random(), provider.clone(), None);
+    let contract = ScribeContractInstance::new(Address::random(), provider.clone(), None, Address::ZERO);
 
     // Log with block_timestamp: None but valid block_number → tries to fetch block
     // This will fail with RPC error since no real node is running, verifying the fallback path
@@ -406,7 +455,7 @@ mod tests {
   #[tokio::test]
   async fn test_is_op_poke_challengeable_stale_returns_false() {
     let provider = new_provider("http://localhost:8545");
-    let contract = ScribeContractInstance::new(Address::random(), provider.clone(), None);
+    let contract = ScribeContractInstance::new(Address::random(), provider.clone(), None, Address::ZERO);
 
     // Fresh log with old timestamp + short challenge period → stale → returns Ok(false)
     // without ever calling signature validation

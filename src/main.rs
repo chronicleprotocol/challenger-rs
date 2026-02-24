@@ -245,8 +245,12 @@ async fn main() -> Result<()> {
   let mut processors: HashMap<Address, Sender<Event>> = HashMap::new();
 
   for address in addresses.iter() {
-    let scribe_contract =
-      ScribeContractInstance::new(*address, provider.clone(), flashbot_provider.clone());
+    let scribe_contract = ScribeContractInstance::new(
+      *address,
+      provider.clone(),
+      flashbot_provider.clone(),
+      signer.default_signer().address(),
+    );
 
     // Create event processor for each address
     let (mut event_processor, tx) =
