@@ -270,7 +270,10 @@ impl<P: Provider> ScribeContractInstance<P> {
           e,
           private_tx_hash
         );
-        match private_provider.get_transaction_receipt(private_tx_hash).await {
+        match private_provider
+          .get_transaction_receipt(private_tx_hash)
+          .await
+        {
           Ok(Some(_receipt)) => {
             log::info!(
               "Contract[{:?}]: Private tx confirmed despite watch error, skipping fallback",
@@ -353,7 +356,8 @@ mod tests {
   #[tokio::test]
   async fn test_is_log_stale() {
     let provider = new_provider("http://localhost:8545");
-    let contract = ScribeContractInstance::new(Address::random(), provider.clone(), None, Address::ZERO);
+    let contract =
+      ScribeContractInstance::new(Address::random(), provider.clone(), None, Address::ZERO);
 
     let now = chrono::Utc::now().timestamp() as u64;
     let log = Log {
@@ -383,7 +387,8 @@ mod tests {
   #[tokio::test]
   async fn test_is_log_stale_boundary_exactly_at_period() {
     let provider = new_provider("http://localhost:8545");
-    let contract = ScribeContractInstance::new(Address::random(), provider.clone(), None, Address::ZERO);
+    let contract =
+      ScribeContractInstance::new(Address::random(), provider.clone(), None, Address::ZERO);
 
     // Event age exactly equals challenge period → should NOT be stale (uses > not >=)
     let now = chrono::Utc::now().timestamp() as u64;
@@ -414,7 +419,8 @@ mod tests {
   #[tokio::test]
   async fn test_is_log_stale_with_block_timestamp_none_and_no_block_number() {
     let provider = new_provider("http://localhost:8545");
-    let contract = ScribeContractInstance::new(Address::random(), provider.clone(), None, Address::ZERO);
+    let contract =
+      ScribeContractInstance::new(Address::random(), provider.clone(), None, Address::ZERO);
 
     // Log with block_timestamp: None and block_number: None → should return NoBlockNumberInLog error
     let log = Log {
@@ -434,7 +440,8 @@ mod tests {
   #[tokio::test]
   async fn test_is_log_stale_with_block_timestamp_none_fetches_block() {
     let provider = new_provider("http://localhost:8545");
-    let contract = ScribeContractInstance::new(Address::random(), provider.clone(), None, Address::ZERO);
+    let contract =
+      ScribeContractInstance::new(Address::random(), provider.clone(), None, Address::ZERO);
 
     // Log with block_timestamp: None but valid block_number → tries to fetch block
     // This will fail with RPC error since no real node is running, verifying the fallback path
@@ -455,7 +462,8 @@ mod tests {
   #[tokio::test]
   async fn test_is_op_poke_challengeable_stale_returns_false() {
     let provider = new_provider("http://localhost:8545");
-    let contract = ScribeContractInstance::new(Address::random(), provider.clone(), None, Address::ZERO);
+    let contract =
+      ScribeContractInstance::new(Address::random(), provider.clone(), None, Address::ZERO);
 
     // Fresh log with old timestamp + short challenge period → stale → returns Ok(false)
     // without ever calling signature validation
