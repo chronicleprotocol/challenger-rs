@@ -202,6 +202,7 @@ async fn main() -> Result<()> {
 
   // Removing duplicates from list of provided addresses
   let mut addresses = args.addresses;
+  addresses.sort();
   addresses.dedup();
   let addresses: Vec<Address> = addresses
     .iter()

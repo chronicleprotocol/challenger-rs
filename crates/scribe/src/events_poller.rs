@@ -727,15 +727,11 @@ mod tests {
       .with_poll_interval(Duration::from_millis(100))
       .build(provider);
 
-    // First poll fails → retry_count should increment
+    // First poll fails
     assert!(poller.poll_for_new_events().await.is_err());
-    poller.retry_count += 1; // Simulate what start() does
-    assert_eq!(poller.retry_count, 1);
 
-    // Second poll succeeds → retry_count should be reset
+    // Second poll succeeds
     poller.poll_for_new_events().await.unwrap();
-    poller.retry_count = 0; // Simulate what start() does on success
-    assert_eq!(poller.retry_count, 0, "Retry count should reset on success");
   }
 
   #[tokio::test]

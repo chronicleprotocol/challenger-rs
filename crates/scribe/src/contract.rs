@@ -112,11 +112,9 @@ impl<P: Provider> ScribeContractInstance<P> {
     let event_timestamp = match log.block_timestamp {
       Some(timestamp) => timestamp,
       None => {
-        if log.block_number.is_none() {
-          return Err(ContractError::NoBlockNumberInLog(log.transaction_hash));
-        }
-
-        let block_number = log.block_number.ok_or(ContractError::MissingBlockNumber)?;
+        let block_number = log
+          .block_number
+          .ok_or(ContractError::NoBlockNumberInLog(log.transaction_hash))?;
         self.get_timestamp_from_block(block_number).await?
       }
     };
@@ -439,12 +437,14 @@ mod tests {
 
   #[tokio::test]
   async fn test_is_log_stale_with_block_timestamp_none_fetches_block() {
-    let provider = new_provider("http://localhost:8545");
-    let contract =
-      ScribeContractInstance::new(Address::random(), provider.clone(), None, Address::ZERO);
+    use alloy::{providers::ProviderBuilder, transports::mock::Asserter};
 
-    // Log with block_timestamp: None but valid block_number → tries to fetch block
-    // This will fail with RPC error since no real node is running, verifying the fallback path
+    let asserter = Asserter::new();
+    asserter.push_failure_msg("no such block");
+    let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+    let contract = ScribeContractInstance::new(Address::random(), provider, None, Address::ZERO);
+
+    // Log with block_timestamp: None but valid block_number → tries to fetch block via RPC
     let log = Log {
       block_number: Some(1),
       block_timestamp: None,
@@ -452,11 +452,7 @@ mod tests {
     };
 
     let result = contract.is_log_stale(&log, 100).await;
-    // Should fail because there's no real node to fetch the block from
-    assert!(
-      result.is_err(),
-      "Should fail trying to fetch block from non-existent node"
-    );
+    assert!(result.is_err(), "Should fail trying to fetch block");
   }
 
   #[tokio::test]

@@ -84,9 +84,6 @@ pub enum ContractError {
 
   #[error("failed to fetch block with number {0}")]
   FailedToFetchBlock(u64),
-
-  #[error("missing block number in log")]
-  MissingBlockNumber,
 }
 
 /// Dynamic event processor result type.
