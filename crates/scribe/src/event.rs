@@ -11,10 +11,10 @@ pub enum Event {
 }
 
 impl Event {
-  pub fn title(&self) -> String {
+  pub fn title(&self) -> &'static str {
     match self {
-      Self::OpPoked(_) => "OpPoked".to_string(),
-      Self::OpPokeChallengedSuccessfully(_) => "OpPokeChallengedSuccessfully".to_string(),
+      Self::OpPoked(_) => "OpPoked",
+      Self::OpPokeChallengedSuccessfully(_) => "OpPokeChallengedSuccessfully",
     }
   }
 

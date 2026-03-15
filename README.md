@@ -24,6 +24,8 @@ Options:
           If no chain_id provided binary will try to get chain_id from given RPC
       --from-block <FROM_BLOCK>
           Block number to start from
+      --max-block-range <MAX_BLOCK_RANGE>
+          Maximum number of blocks to fetch per RPC request. Splits wide ranges into multiple calls.
   -h, --help
           Print help
   -V, --version
@@ -145,6 +147,8 @@ Options:
           If no chain_id provided binary will try to get chain_id from given RPC
       --from-block <FROM_BLOCK>
           Block number to start from
+      --max-block-range <MAX_BLOCK_RANGE>
+          Maximum number of blocks to fetch per RPC request. Splits wide ranges into multiple calls.
   -h, --help
           Print help
   -V, --version

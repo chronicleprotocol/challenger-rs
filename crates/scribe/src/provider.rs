@@ -39,7 +39,11 @@ pub(crate) fn new_provider(url: &str) -> Arc<FullHTTPRetryProviderWithSigner> {
 
   let client = ClientBuilder::default()
     .layer(RetryBackoffLayer::new(15, 200, 300))
-    .http(url.parse().unwrap());
+    .http(
+      url
+        .parse()
+        .expect("invalid test URL provided to new_provider"),
+    );
 
   Arc::new(
     ProviderBuilder::new()

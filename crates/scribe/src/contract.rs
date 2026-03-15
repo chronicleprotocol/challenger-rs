@@ -53,7 +53,7 @@ pub trait ScribeContract: Send + Sync {
 
   /// Returns true if given `OpPoked` event is challengeable.
   /// It checks if the event is stale and if the signature is valid.
-  fn is_op_poke_challangeble(
+  fn is_op_poke_challengeable(
     &self,
     op_poked: &Log<ScribeOptimistic::OpPoked>,
     challenge_period: u64,
@@ -74,6 +74,7 @@ pub struct ScribeContractInstance<P: Provider> {
   contract: ScribeOptimisticInstance<P>,
   // public_provider: Arc<RetryProviderWithSigner>,
   private_provider: Option<Arc<FullHTTPRetryProviderWithSigner>>,
+  signer_address: Address,
 }
 
 impl<P: Provider> ScribeContractInstance<P> {
@@ -82,11 +83,21 @@ impl<P: Provider> ScribeContractInstance<P> {
     address: Address,
     public_provider: P,
     private_provider: Option<Arc<FullHTTPRetryProviderWithSigner>>,
+    signer_address: Address,
   ) -> Self {
     Self {
       contract: ScribeOptimistic::new(address, public_provider),
       private_provider,
+      signer_address,
     }
+  }
+
+  /// Helper method to wrap contract errors with address context
+  fn wrap_contract_error<T>(&self, result: Result<T, alloy::contract::Error>) -> ContractResult<T> {
+    result.map_err(|e| ContractError::AlloyContractError {
+      address: *self.address(),
+      source: e,
+    })
   }
 
   // Checks if the log is stale, i.e. if the event is outside of the challenge period.
@@ -101,13 +112,10 @@ impl<P: Provider> ScribeContractInstance<P> {
     let event_timestamp = match log.block_timestamp {
       Some(timestamp) => timestamp,
       None => {
-        if log.block_number.is_none() {
-          return Err(ContractError::NoBlockNumberInLog(log.transaction_hash));
-        }
-
-        self
-          .get_timestamp_from_block(log.block_number.unwrap())
-          .await?
+        let block_number = log
+          .block_number
+          .ok_or(ContractError::NoBlockNumberInLog(log.transaction_hash))?;
+        self.get_timestamp_from_block(block_number).await?
       }
     };
 
@@ -142,25 +150,21 @@ impl<P: Provider> ScribeContractInstance<P> {
       self.address()
     );
 
-    let message = self
-      .contract
-      .constructPokeMessage(op_poked.pokeData)
-      .call()
-      .await
-      .map_err(|e| ContractError::AlloyContractError {
-        address: *self.address(),
-        source: e,
-      })?;
+    let message = self.wrap_contract_error(
+      self
+        .contract
+        .constructPokeMessage(op_poked.pokeData)
+        .call()
+        .await,
+    )?;
 
-    let acceptable = self
-      .contract
-      .isAcceptableSchnorrSignatureNow(message, op_poked.schnorrData)
-      .call()
-      .await
-      .map_err(|e| ContractError::AlloyContractError {
-        address: *self.address(),
-        source: e,
-      })?;
+    let acceptable = self.wrap_contract_error(
+      self
+        .contract
+        .isAcceptableSchnorrSignatureNow(message, op_poked.schnorrData)
+        .call()
+        .await,
+    )?;
 
     Ok(acceptable)
   }
@@ -172,15 +176,30 @@ impl<P: Provider> ScribeContractInstance<P> {
       &schnorr_data
     );
 
-    let tx = self
+    // Explicitly fetch the pending nonce to avoid the stale "latest" nonce returned by
+    // NonceFiller when the private tx was already included by Flashbots.
+    let nonce = self
       .contract
-      .opChallenge(schnorr_data.clone())
-      .send()
-      .await
-      .map_err(|e| ContractError::AlloyContractError {
-        address: *self.address(),
-        source: e,
-      })?
+      .provider()
+      .get_transaction_count(self.signer_address)
+      .pending()
+      .await?;
+
+    log::debug!(
+      "Contract[{:?}]: Using pending nonce {} for public fallback tx",
+      self.address(),
+      nonce
+    );
+
+    let tx = self
+      .wrap_contract_error(
+        self
+          .contract
+          .opChallenge(schnorr_data.clone())
+          .nonce(nonce)
+          .send()
+          .await,
+      )?
       .with_timeout(Some(TX_CONFIRMATION_TIMEOUT))
       .watch()
       .await
@@ -230,16 +249,43 @@ impl<P: Provider> ScribeContractInstance<P> {
       pending_tx.tx_hash()
     );
 
-    let tx_hash = pending_tx
+    // Save the hash BEFORE consuming pending_tx into watch()
+    let private_tx_hash = *pending_tx.tx_hash();
+
+    let watch_result = pending_tx
       .with_timeout(Some(TX_CONFIRMATION_TIMEOUT))
       .watch()
-      .await
-      .map_err(|e| ContractError::PendingTransactionError {
-        address: *self.address(),
-        source: e,
-      })?;
+      .await;
 
-    Ok(tx_hash)
+    match watch_result {
+      Ok(tx_hash) => Ok(tx_hash),
+      Err(e) => {
+        // TxWatcher(Timeout) does NOT guarantee the tx was dropped — Flashbots may have
+        // included it. Fetch the receipt before falling back to the public mempool.
+        log::warn!(
+          "Contract[{:?}]: Private tx watch failed ({:?}), checking receipt for {:?}",
+          self.address(),
+          e,
+          private_tx_hash
+        );
+        match private_provider
+          .get_transaction_receipt(private_tx_hash)
+          .await
+        {
+          Ok(Some(_receipt)) => {
+            log::info!(
+              "Contract[{:?}]: Private tx confirmed despite watch error, skipping fallback",
+              self.address()
+            );
+            Ok(private_tx_hash)
+          }
+          _ => Err(ContractError::PendingTransactionError {
+            address: *self.address(),
+            source: e,
+          }),
+        }
+      }
+    }
   }
 }
 
@@ -251,15 +297,7 @@ impl<P: Provider> ScribeContract for ScribeContractInstance<P> {
 
   /// Returns challenge period from ScribeOptimistic smart contract deployed to `address`.
   async fn get_challenge_period(&self) -> ContractResult<u16> {
-    self
-      .contract
-      .opChallengePeriod()
-      .call()
-      .await
-      .map_err(|e| ContractError::AlloyContractError {
-        address: *self.address(),
-        source: e,
-      })
+    self.wrap_contract_error(self.contract.opChallengePeriod().call().await)
   }
 
   /// Challenges given `OpPoked` event with given `schnorr_data`.
@@ -291,7 +329,7 @@ impl<P: Provider> ScribeContract for ScribeContractInstance<P> {
   }
 
   /// Returns true if given `OpPoked` event is challengeable.
-  async fn is_op_poke_challangeble(
+  async fn is_op_poke_challengeable(
     &self,
     op_poked_log: &Log<ScribeOptimistic::OpPoked>,
     challenge_period: u64,
@@ -316,7 +354,8 @@ mod tests {
   #[tokio::test]
   async fn test_is_log_stale() {
     let provider = new_provider("http://localhost:8545");
-    let contract = ScribeContractInstance::new(Address::random(), provider.clone(), None);
+    let contract =
+      ScribeContractInstance::new(Address::random(), provider.clone(), None, Address::ZERO);
 
     let now = chrono::Utc::now().timestamp() as u64;
     let log = Log {
@@ -341,5 +380,102 @@ mod tests {
       ..Default::default()
     };
     assert!(contract.is_log_stale(&log, 100).await.is_err());
+  }
+
+  #[tokio::test]
+  async fn test_is_log_stale_boundary_exactly_at_period() {
+    let provider = new_provider("http://localhost:8545");
+    let contract =
+      ScribeContractInstance::new(Address::random(), provider.clone(), None, Address::ZERO);
+
+    // Event age exactly equals challenge period → should NOT be stale (uses > not >=)
+    let now = chrono::Utc::now().timestamp() as u64;
+    let challenge_period = 100;
+    let log = Log {
+      block_number: Some(1),
+      block_timestamp: Some(now - challenge_period),
+      ..Default::default()
+    };
+
+    assert!(
+      !contract.is_log_stale(&log, challenge_period).await.unwrap(),
+      "Event exactly at challenge period boundary should NOT be stale (> not >=)"
+    );
+
+    // One second past → should be stale
+    let log = Log {
+      block_number: Some(1),
+      block_timestamp: Some(now - challenge_period - 1),
+      ..Default::default()
+    };
+    assert!(
+      contract.is_log_stale(&log, challenge_period).await.unwrap(),
+      "Event one second past challenge period should be stale"
+    );
+  }
+
+  #[tokio::test]
+  async fn test_is_log_stale_with_block_timestamp_none_and_no_block_number() {
+    let provider = new_provider("http://localhost:8545");
+    let contract =
+      ScribeContractInstance::new(Address::random(), provider.clone(), None, Address::ZERO);
+
+    // Log with block_timestamp: None and block_number: None → should return NoBlockNumberInLog error
+    let log = Log {
+      block_number: None,
+      block_timestamp: None,
+      ..Default::default()
+    };
+
+    let result = contract.is_log_stale(&log, 100).await;
+    assert!(result.is_err());
+    assert!(
+      matches!(result.unwrap_err(), ContractError::NoBlockNumberInLog(..)),
+      "Should return NoBlockNumberInLog error when both timestamp and block number are None"
+    );
+  }
+
+  #[tokio::test]
+  async fn test_is_log_stale_with_block_timestamp_none_fetches_block() {
+    use alloy::{providers::ProviderBuilder, transports::mock::Asserter};
+
+    let asserter = Asserter::new();
+    asserter.push_failure_msg("no such block");
+    let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+    let contract = ScribeContractInstance::new(Address::random(), provider, None, Address::ZERO);
+
+    // Log with block_timestamp: None but valid block_number → tries to fetch block via RPC
+    let log = Log {
+      block_number: Some(1),
+      block_timestamp: None,
+      ..Default::default()
+    };
+
+    let result = contract.is_log_stale(&log, 100).await;
+    assert!(result.is_err(), "Should fail trying to fetch block");
+  }
+
+  #[tokio::test]
+  async fn test_is_op_poke_challengeable_stale_returns_false() {
+    let provider = new_provider("http://localhost:8545");
+    let contract =
+      ScribeContractInstance::new(Address::random(), provider.clone(), None, Address::ZERO);
+
+    // Fresh log with old timestamp + short challenge period → stale → returns Ok(false)
+    // without ever calling signature validation
+    let old_timestamp = chrono::Utc::now().timestamp() as u64 - 1000;
+    let log = Log {
+      block_number: Some(1),
+      block_timestamp: Some(old_timestamp),
+      ..Default::default()
+    };
+
+    // Challenge period of 1 second means the event (1000s old) is definitely stale
+    let result = contract.is_op_poke_challengeable(&log, 1).await;
+    assert!(result.is_ok());
+    assert!(
+      !result.unwrap(),
+      "Stale event should return false without calling signature validation"
+    );
   }
 }

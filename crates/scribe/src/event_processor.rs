@@ -20,7 +20,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
   contract::{ScribeContract, ScribeOptimistic::OpPoked},
-  error::ProcessorResult,
+  error::{ProcessorError, ProcessorResult},
   event::Event,
   metrics,
 };
@@ -93,9 +93,16 @@ impl<C: ScribeContract + Clone + 'static> ScribeEventsProcessor<C> {
           self.scribe_contract.address()
         );
 
+        let challenge_period =
+          self
+            .challenge_period
+            .ok_or_else(|| ProcessorError::ChallengePeriodNotInitialized {
+              address: *self.scribe_contract.address(),
+            })?;
+
         let op_poke_challengeable = self
           .scribe_contract
-          .is_op_poke_challangeble(&log, self.challenge_period.unwrap())
+          .is_op_poke_challengeable(&log, challenge_period)
           .await?;
 
         log::debug!(
@@ -146,13 +153,11 @@ impl<C: ScribeContract + Clone + 'static> ScribeEventsProcessor<C> {
           );
         }
 
-        _ = tokio::time::sleep(challenge_poke_delay) => {
-          log::debug!(
-            "ScribeEventsProcessor[{:?}] Trying to challenge OpPoked event",
-            &contract.address()
-          );
-
-          match contract.challenge(schnorr_data).await {
+        result = async {
+          tokio::time::sleep(challenge_poke_delay).await;
+          contract.challenge(schnorr_data).await
+        } => {
+          match result {
             Ok(tx_hash) => {
               // Increment the challenge counter
               metrics::inc_challenge_counter(*contract.address());
@@ -170,7 +175,7 @@ impl<C: ScribeContract + Clone + 'static> ScribeEventsProcessor<C> {
                 e
               );
             }
-          };
+          }
         }
       }
     });
@@ -193,13 +198,13 @@ impl<C: ScribeContract + Clone + 'static> ScribeEventsProcessor<C> {
   }
 
   /// Starts the handling events.
-  pub async fn start(&mut self) {
+  pub async fn start(&mut self) -> ProcessorResult<()> {
     log::debug!(
       "ScribeEventsProcessor[{:?}] Starting new contract handler",
       self.scribe_contract.address()
     );
     // We have to fail if no challenge period is fetched on start
-    self.refresh_challenge_period().await.unwrap();
+    self.refresh_challenge_period().await?;
 
     loop {
       tokio::select! {
@@ -209,7 +214,7 @@ impl<C: ScribeContract + Clone + 'static> ScribeEventsProcessor<C> {
                 "ScribeEventsProcessor[{:?}] Cancellation requested, stopping contract handler",
                 self.scribe_contract.address()
             );
-            return;
+            return Ok(());
         }
         // new [Event] received, process it...
         event = self.rx.recv() => {
@@ -241,7 +246,7 @@ mod tests {
   use super::*;
   use crate::{
     contract::{IScribe::SchnorrData, ScribeOptimistic},
-    error::ContractResult,
+    error::{ContractError, ContractResult},
   };
   use alloy::primitives::{Address, TxHash};
   use mockall::{mock, Sequence};
@@ -280,7 +285,7 @@ mod tests {
 
       /// Returns true if given `OpPoked` event is challengeable.
       /// It checks if the event is stale and if the signature is valid.
-      async fn is_op_poke_challangeble(
+      async fn is_op_poke_challengeable(
         &self,
         op_poked: &Log<ScribeOptimistic::OpPoked>,
         challenge_period: u64,
@@ -422,7 +427,7 @@ mod tests {
     let mut scribe = MockScribe::new();
     scribe.expect_get_challenge_period().returning(|| Ok(10));
     scribe
-      .expect_is_op_poke_challangeble()
+      .expect_is_op_poke_challengeable()
       .returning(|_, _| Ok(false));
 
     let log: Log = serde_json::from_str(LOG).unwrap();
@@ -453,7 +458,7 @@ mod tests {
     let mut scribe = MockScribe::new();
     scribe.expect_get_challenge_period().returning(|| Ok(10));
     scribe
-      .expect_is_op_poke_challangeble()
+      .expect_is_op_poke_challengeable()
       .returning(|_, _| Ok(true));
     scribe.expect_clone().return_once(move || scribe_clone);
 
@@ -492,7 +497,7 @@ mod tests {
       cancel.cancel();
     });
 
-    processor.start().await;
+    assert!(processor.start().await.is_ok());
     assert!(cancel_clone.is_cancelled());
   }
 
@@ -516,7 +521,7 @@ mod tests {
       .in_sequence(&mut sequence)
       .returning(|| Ok(10));
     scribe
-      .expect_is_op_poke_challangeble()
+      .expect_is_op_poke_challengeable()
       .times(1)
       .in_sequence(&mut sequence)
       .returning(|_, _| Ok(true));
@@ -539,7 +544,7 @@ mod tests {
     let (mut processor, tx) = ScribeEventsProcessor::new(scribe, cancel.clone(), Some(duration));
 
     let handle = tokio::spawn(async move {
-      processor.start().await;
+      processor.start().await.unwrap();
     });
 
     tx.send(event).await.unwrap();
@@ -549,5 +554,320 @@ mod tests {
     cancel.cancel();
     // wait till termination
     handle.await.unwrap();
+  }
+
+  #[tokio::test]
+  async fn test_handle_event_contract_error_propagates() {
+    let mut scribe = MockScribe::new();
+    scribe.expect_get_challenge_period().returning(|| Ok(10));
+    scribe.expect_is_op_poke_challengeable().returning(|_, _| {
+      Err(ContractError::AlloySolTypesError(
+        alloy::sol_types::Error::Other("test error".into()),
+      ))
+    });
+
+    let log: Log = serde_json::from_str(LOG).unwrap();
+    let event = Event::try_from(log).unwrap();
+
+    let (mut processor, _) = ScribeEventsProcessor::new(scribe, CancellationToken::new(), None);
+    processor.refresh_challenge_period().await.unwrap();
+
+    let result = processor.handle_event(event).await;
+    assert!(
+      result.is_err(),
+      "Contract error should propagate from handle_event"
+    );
+    assert!(
+      matches!(
+        result.unwrap_err(),
+        crate::error::ProcessorError::ContractError(_)
+      ),
+      "Error should be ProcessorError::ContractError"
+    );
+  }
+
+  #[tokio::test]
+  async fn test_spawn_challenge_error_does_not_panic() {
+    let cancel = CancellationToken::new();
+    let mut scribe = MockScribe::new();
+    let mut scribe_clone = MockScribe::new();
+    scribe_clone
+      .expect_address()
+      .return_const(Address::random().to_owned());
+
+    // challenge returns an error
+    scribe_clone.expect_challenge().times(1).returning(|_| {
+      Err(ContractError::MissingPrivateProvider {
+        address: Address::random(),
+      })
+    });
+
+    scribe.expect_clone().return_once(move || scribe_clone);
+
+    let log: Log = serde_json::from_str(LOG).unwrap();
+    let poke: Log<ScribeOptimistic::OpPoked> = log.log_decode().unwrap();
+
+    let duration = Duration::from_millis(5);
+
+    let (mut processor, _) = ScribeEventsProcessor::new(scribe, cancel.clone(), Some(duration));
+
+    processor.spawn_challenge(&poke);
+    assert!(processor.challenge_process_cancelation_token.is_some());
+
+    // Wait for the challenge task to complete (it should log error but not panic)
+    tokio::time::sleep(duration * 3).await;
+  }
+
+  #[tokio::test]
+  async fn test_refresh_challenge_period_rpc_error() {
+    let mut scribe = MockScribe::new();
+    scribe.expect_get_challenge_period().returning(|| {
+      Err(ContractError::RpcError(
+        alloy::transports::RpcError::Transport(
+          alloy::transports::TransportErrorKind::PubsubUnavailable,
+        ),
+      ))
+    });
+
+    let (mut processor, _) = ScribeEventsProcessor::new(scribe, CancellationToken::new(), None);
+
+    let result = processor.refresh_challenge_period().await;
+    assert!(
+      result.is_err(),
+      "RPC error from get_challenge_period should propagate"
+    );
+  }
+
+  #[tokio::test]
+  async fn test_start_handles_channel_close() {
+    let mut scribe = MockScribe::new();
+    scribe.expect_get_challenge_period().returning(|| Ok(10));
+    scribe
+      .expect_address()
+      .return_const(Address::random().to_owned());
+
+    let cancel = CancellationToken::new();
+    let cancel_clone = cancel.clone();
+
+    let (mut processor, tx) = ScribeEventsProcessor::new(scribe, cancel_clone, None);
+
+    // Drop the sender to close the channel
+    drop(tx);
+
+    // Cancel after a short delay so start() doesn't run forever
+    tokio::spawn(async move {
+      tokio::time::sleep(Duration::from_millis(50)).await;
+      cancel.cancel();
+    });
+
+    // start() should handle the closed channel gracefully (log warning, not crash)
+    let result = processor.start().await;
+    assert!(
+      result.is_ok(),
+      "start() should not crash when channel is closed"
+    );
+  }
+
+  #[tokio::test]
+  async fn test_handle_event_error_in_start_loop_logged_not_fatal() {
+    let mut scribe = MockScribe::new();
+    scribe
+      .expect_address()
+      .return_const(Address::random().to_owned());
+    scribe.expect_get_challenge_period().returning(|| Ok(10));
+
+    // First event triggers a contract error, should be logged but not fatal
+    scribe.expect_is_op_poke_challengeable().returning(|_, _| {
+      Err(ContractError::AlloySolTypesError(
+        alloy::sol_types::Error::Other("test".into()),
+      ))
+    });
+
+    let cancel = CancellationToken::new();
+    let cancel_clone = cancel.clone();
+
+    let log: Log = serde_json::from_str(LOG).unwrap();
+    let event = Event::try_from(log).unwrap();
+
+    let (mut processor, tx) = ScribeEventsProcessor::new(scribe, cancel_clone, None);
+
+    let handle = tokio::spawn(async move {
+      processor.start().await.unwrap();
+    });
+
+    // Send event that will cause an error
+    tx.send(event).await.unwrap();
+
+    // Give time for error to be processed
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    // Cancel the process - if we get here, the error didn't crash start()
+    cancel.cancel();
+    handle.await.unwrap();
+  }
+
+  #[tokio::test]
+  async fn test_multiple_op_poked_events_cancel_previous_challenge() {
+    let mut scribe = MockScribe::new();
+    scribe.expect_get_challenge_period().returning(|| Ok(10));
+    scribe
+      .expect_is_op_poke_challengeable()
+      .returning(|_, _| Ok(true));
+
+    // Need two clones for two spawn_challenge calls
+    let mut clone1 = MockScribe::new();
+    clone1
+      .expect_address()
+      .return_const(Address::random().to_owned());
+    clone1.expect_challenge().never(); // Should be cancelled before executing
+
+    let mut clone2 = MockScribe::new();
+    clone2
+      .expect_address()
+      .return_const(Address::random().to_owned());
+    clone2
+      .expect_challenge()
+      .times(1)
+      .returning(|_| Ok(TxHash::random()));
+
+    let mut seq = Sequence::new();
+    scribe
+      .expect_clone()
+      .times(1)
+      .in_sequence(&mut seq)
+      .return_once(move || clone1);
+    scribe
+      .expect_clone()
+      .times(1)
+      .in_sequence(&mut seq)
+      .return_once(move || clone2);
+
+    let log: Log = serde_json::from_str(LOG).unwrap();
+    let event1 = Event::try_from(log.clone()).unwrap();
+    let event2 = Event::try_from(log).unwrap();
+
+    // Use a long delay so we can send the second event before the first challenge fires
+    let duration = Duration::from_millis(100);
+
+    let (mut processor, _) =
+      ScribeEventsProcessor::new(scribe, CancellationToken::new(), Some(duration));
+    processor.refresh_challenge_period().await.unwrap();
+
+    // First event spawns a challenge
+    processor.handle_event(event1).await.unwrap();
+    let first_token = processor
+      .challenge_process_cancelation_token
+      .clone()
+      .unwrap();
+    assert!(!first_token.is_cancelled(), "First token should be active");
+
+    // Second event should cancel the first and spawn a new one
+    processor.handle_event(event2).await.unwrap();
+    assert!(
+      first_token.is_cancelled(),
+      "First challenge should be cancelled when second OpPoked arrives"
+    );
+    assert!(
+      processor.challenge_process_cancelation_token.is_some(),
+      "New challenge token should exist"
+    );
+
+    // Wait for the second challenge to execute
+    tokio::time::sleep(duration * 2).await;
+  }
+
+  #[tokio::test]
+  async fn test_op_poke_then_challenged_successfully_then_op_poke() {
+    let challenge_log_str = r#"
+      {
+        "address": "0x891e368fe81cba2ac6f6cc4b98e684c106e2ef4f",
+        "topics": [
+          "0xac50cef58b3aef7f7c30349f5e4a342a29d2325a02eafc8dacfdba391e6d5db3",
+          "0x0000000000000000000000001f7acda376ef37ec371235a094113df9cb4efee1"
+        ],
+        "data": "0x0000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000002456d7d2e80000000000000000000000003f17f1962b36e491b30a40b2405849e597ba5fb500000000000000000000000000000000000000000000000000000000",
+        "blockNumber": "0x75823d",
+        "transactionHash": "0xfc99cae27a9593e3b5910ef65dfeae601de2b2cfd678a1396c7878b489f34509",
+        "transactionIndex": "0x8f",
+        "blockHash": "0x1ea63aa0ae6603a49fccd44d1271a7112f34b41a8512e625844a560cde066a24",
+        "logIndex": "0x116",
+        "removed": false
+      }
+    "#;
+
+    let mut scribe = MockScribe::new();
+    scribe.expect_get_challenge_period().returning(|| Ok(10));
+    scribe
+      .expect_is_op_poke_challengeable()
+      .returning(|_, _| Ok(true));
+
+    // Two clones for two OpPoked events
+    let mut clone1 = MockScribe::new();
+    clone1
+      .expect_address()
+      .return_const(Address::random().to_owned());
+    clone1.expect_challenge().never(); // Will be cancelled by OpPokeChallengedSuccessfully
+
+    let mut clone2 = MockScribe::new();
+    clone2
+      .expect_address()
+      .return_const(Address::random().to_owned());
+    clone2
+      .expect_challenge()
+      .times(1)
+      .returning(|_| Ok(TxHash::random()));
+
+    let mut seq = Sequence::new();
+    scribe
+      .expect_clone()
+      .times(1)
+      .in_sequence(&mut seq)
+      .return_once(move || clone1);
+    scribe
+      .expect_clone()
+      .times(1)
+      .in_sequence(&mut seq)
+      .return_once(move || clone2);
+
+    let log: Log = serde_json::from_str(LOG).unwrap();
+    let op_poked_event1 = Event::try_from(log.clone()).unwrap();
+    let op_poked_event2 = Event::try_from(log).unwrap();
+
+    let challenge_log: Log = serde_json::from_str(challenge_log_str).unwrap();
+    let challenged_event = Event::try_from(challenge_log).unwrap();
+
+    let duration = Duration::from_millis(100);
+    let (mut processor, _) =
+      ScribeEventsProcessor::new(scribe, CancellationToken::new(), Some(duration));
+    processor.refresh_challenge_period().await.unwrap();
+
+    // 1. First OpPoked → spawns challenge
+    processor.handle_event(op_poked_event1).await.unwrap();
+    let first_token = processor
+      .challenge_process_cancelation_token
+      .clone()
+      .unwrap();
+    assert!(!first_token.is_cancelled());
+
+    // 2. OpPokeChallengedSuccessfully → cancels first challenge
+    processor.handle_event(challenged_event).await.unwrap();
+    assert!(
+      first_token.is_cancelled(),
+      "First challenge should be cancelled"
+    );
+    assert!(
+      processor.challenge_process_cancelation_token.is_none(),
+      "Token should be cleared after cancellation"
+    );
+
+    // 3. Second OpPoked → spawns new challenge
+    processor.handle_event(op_poked_event2).await.unwrap();
+    assert!(
+      processor.challenge_process_cancelation_token.is_some(),
+      "New challenge should be spawned"
+    );
+
+    // Wait for the second challenge to execute
+    tokio::time::sleep(duration * 2).await;
   }
 }

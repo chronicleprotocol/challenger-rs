@@ -20,6 +20,7 @@ use alloy::{
   rpc::types::{Filter, Log},
   sol_types::SolEvent,
 };
+use log::error;
 use tokio::sync::mpsc::Sender;
 use tokio_util::sync::CancellationToken;
 
@@ -42,6 +43,7 @@ pub struct PollerBuilder {
   cancellation_token: CancellationToken,
   poll_interval: Duration,
   from_block: Option<u64>,
+  max_block_range: Option<u64>,
 }
 
 impl PollerBuilder {
@@ -107,6 +109,19 @@ impl PollerBuilder {
     Self { from_block, ..self }
   }
 
+  /// Sets the maximum number of blocks per RPC request for the `PollerBuilder`.
+  ///
+  /// # Arguments
+  ///
+  /// * `max_block_range` - The maximum block range per request. Wide ranges are split into
+  ///   multiple sequential sub-range calls within a single poll cycle.
+  pub fn with_max_block_range(self, max_block_range: Option<u64>) -> Self {
+    Self {
+      max_block_range,
+      ..self
+    }
+  }
+
   /// Builds the `Poller` with the provided `PollProvider`.
   ///
   /// # Arguments
@@ -124,6 +139,7 @@ impl PollerBuilder {
       provider,
       self.poll_interval,
       self.from_block,
+      self.max_block_range,
     )
   }
 }
@@ -143,6 +159,7 @@ pub struct Poller<P: PollProvider> {
   poll_interval: Duration,
   provider: P,
   retry_count: u16,
+  max_block_range: Option<u64>,
 }
 
 impl<P: PollProvider> Poller<P> {
@@ -153,6 +170,7 @@ impl<P: PollProvider> Poller<P> {
     provider: P,
     poll_interval: Duration,
     from_block: Option<u64>,
+    max_block_range: Option<u64>,
   ) -> Self {
     Self {
       from,
@@ -163,6 +181,7 @@ impl<P: PollProvider> Poller<P> {
       poll_interval,
       last_processes_block: from_block.unwrap_or(0),
       retry_count: 0,
+      max_block_range,
     }
   }
 
@@ -195,7 +214,7 @@ impl<P: PollProvider> Poller<P> {
     Ok(self.provider.get_logs(&filter).await?)
   }
 
-  // Sends event to the channel by address, if no channel found, panics.
+  // Sends event to the channel by address, if no channel found, returns error.
   async fn send_log_for_processing(&self, log: Log) -> PollerResult<()> {
     let event = Event::try_from(log)?;
 
@@ -207,11 +226,13 @@ impl<P: PollProvider> Poller<P> {
 
     // Send event to the channel
     let Some(tx) = self.handler_channels.get(&event.address()) else {
-      // should never happen !
-      panic!(
-        "Poller: No channel found for address {:?}, skipping",
+      error!(
+        "Poller: No channel found for address {:?}, skipping event",
         &event.address()
       );
+      return Err(PollerError::ChannelNotFound {
+        address: event.address(),
+      });
     };
 
     tx.send(event).await?;
@@ -221,24 +242,45 @@ impl<P: PollProvider> Poller<P> {
 
   // Split addresses into chunks and poll for logs for every chunk
   // from `self.last_processes_block..latest_block`.
+  // If `max_block_range` is set, wide block ranges are further split into sub-ranges.
   // If any log is received, send it for processing using `send_log_for_processing`.
   async fn chunk_and_poll_logs(&self, latest_block: u64) -> PollerResult<()> {
+    // Build list of (from, to) block sub-ranges
+    let ranges: Vec<(u64, u64)> = match self.max_block_range {
+      None => vec![(self.last_processes_block, latest_block)],
+      Some(max_blocks) => {
+        let mut ranges = Vec::new();
+        let mut current = self.last_processes_block;
+        while current <= latest_block {
+          let end = (current + max_blocks - 1).min(latest_block);
+          ranges.push((current, end));
+          current = end + 1;
+        }
+        ranges
+      }
+    };
+
     // Split addresses into chunks of MAX_ADDRESS_PER_REQUEST to optimize amount of requests
     for chunk in self.addresses.chunks(MAX_ADDRESS_PER_REQUEST) {
-      let logs = self
-        .query_logs(chunk.to_vec(), self.last_processes_block, latest_block)
-        .await?;
+      for &(from_block, to_block) in &ranges {
+        let logs = self
+          .query_logs(chunk.to_vec(), from_block, to_block)
+          .await?;
 
-      log::debug!(
-        "Poller: Received {} logs for chunk [{:?}]",
-        logs.len(),
-        chunk
-      );
+        log::debug!(
+          "Poller: Received {} logs for chunk [{:?}] blocks [{}-{}]",
+          logs.len(),
+          chunk,
+          from_block,
+          to_block
+        );
 
-      for log in logs {
-        if let Err(e) = self.send_log_for_processing(log).await {
-          log::error!("Poller: Failed to parse log: {:?}", e);
-        };
+        for log in logs {
+          if let Err(e) = self.send_log_for_processing(log).await {
+            log::error!("Poller: Failed to parse log: {:?}", e);
+            continue;
+          }
+        }
       }
     }
 
@@ -322,6 +364,7 @@ mod tests {
     rpc::types::Log,
     transports::{RpcError, TransportErrorKind},
   };
+  use mockall::Sequence;
 
   // Predefined details for tests
   static ADDRESS: Address = address!("0x891e368fe81cba2ac6f6cc4b98e684c106e2ef4f");
@@ -433,17 +476,21 @@ mod tests {
   }
 
   #[tokio::test]
-  #[should_panic]
-  async fn test_send_event_to_process_panics_on_unknown_address() {
+  async fn test_send_event_to_process_returns_error_on_unknown_address() {
     let deserialized: Log = serde_json::from_str(LOG).unwrap();
 
-    // should panic with no channel found for event address
-    PollerBuilder::builder()
+    // should return ChannelNotFound error when no channel exists for event address
+    let result = PollerBuilder::builder()
       .with_poll_interval(Duration::from_millis(100))
       .build(MockPollProvider::new())
       .send_log_for_processing(deserialized)
-      .await
-      .unwrap();
+      .await;
+
+    assert!(result.is_err());
+    assert!(
+      matches!(result.unwrap_err(), PollerError::ChannelNotFound { .. }),
+      "Should return ChannelNotFound error for unknown address"
+    );
   }
 
   // query_logs returns error
@@ -622,5 +669,191 @@ mod tests {
 
     // If assertion fails, it means that poller didn't exit after max retries and was cancelled
     assert!(poller.start().await.is_err());
+  }
+
+  #[tokio::test]
+  async fn test_send_event_with_closed_channel() {
+    let deserialized: Log = serde_json::from_str(LOG).unwrap();
+
+    // Create channel and immediately drop receiver
+    let (tx, rx) = tokio::sync::mpsc::channel(1);
+    drop(rx);
+
+    let mut addresses: HashMap<Address, Sender<Event>> = HashMap::new();
+    addresses.insert(ADDRESS, tx);
+
+    let poller = PollerBuilder::builder()
+      .with_handler_channels(addresses)
+      .with_poll_interval(Duration::from_millis(100))
+      .build(MockPollProvider::new());
+
+    let result = poller.send_log_for_processing(deserialized).await;
+    assert!(
+      result.is_err(),
+      "Sending to closed channel should return error"
+    );
+  }
+
+  #[tokio::test]
+  async fn test_poll_resets_retry_count_on_success() {
+    let mut provider = MockPollProvider::new();
+    let mut seq = Sequence::new();
+
+    // First call fails
+    provider
+      .expect_get_block_number()
+      .times(1)
+      .in_sequence(&mut seq)
+      .returning(|| {
+        Err(PollProviderError::RpcError(RpcError::Transport(
+          TransportErrorKind::PubsubUnavailable,
+        )))
+      });
+
+    // Second call succeeds
+    provider
+      .expect_get_block_number()
+      .times(1)
+      .in_sequence(&mut seq)
+      .returning(|| Ok(10));
+
+    provider.expect_get_logs().returning(|_| Ok(vec![]));
+
+    let mut addresses: HashMap<Address, Sender<Event>> = HashMap::new();
+    addresses.insert(ADDRESS, tokio::sync::mpsc::channel(100).0);
+
+    let mut poller = PollerBuilder::builder()
+      .with_handler_channels(addresses)
+      .with_poll_interval(Duration::from_millis(100))
+      .build(provider);
+
+    // First poll fails
+    assert!(poller.poll_for_new_events().await.is_err());
+
+    // Second poll succeeds
+    poller.poll_for_new_events().await.unwrap();
+  }
+
+  #[tokio::test]
+  async fn test_poll_increments_retry_count_on_error() {
+    let mut provider = MockPollProvider::new();
+
+    // Always fail on get_block_number
+    provider
+      .expect_get_block_number()
+      .returning(|| Err(PollProviderError::RpcError(RpcError::NullResp)));
+
+    let mut addresses: HashMap<Address, Sender<Event>> = HashMap::new();
+    addresses.insert(ADDRESS, tokio::sync::mpsc::channel(100).0);
+
+    let cancel = CancellationToken::new();
+
+    let mut poller = PollerBuilder::builder()
+      .with_handler_channels(addresses)
+      .with_poll_interval(Duration::from_millis(1))
+      .with_cancellation_token(cancel.clone())
+      .build(provider);
+
+    // Cancel after enough time for retries to hit max
+    tokio::spawn(async move {
+      tokio::time::sleep(Duration::from_secs(1)).await;
+      cancel.cancel();
+    });
+
+    let result = poller.start().await;
+    assert!(result.is_err());
+    assert!(
+      matches!(result.unwrap_err(), PollerError::MaxRetryAttemptsExceeded(n) if n == MAX_RETRY_COUNT),
+      "Should fail with MaxRetryAttemptsExceeded after {} retries",
+      MAX_RETRY_COUNT
+    );
+  }
+
+  // With max_block_range=100 and a 250-block span (0..249), query_logs should be called 3 times:
+  // [0-99], [100-199], [200-249]
+  #[tokio::test]
+  async fn test_chunk_and_poll_splits_block_ranges() {
+    use std::sync::{Arc, Mutex};
+
+    let mut provider = MockPollProvider::new();
+
+    let call_count = Arc::new(Mutex::new(0u32));
+    let call_count_clone = call_count.clone();
+    provider
+      .expect_get_logs()
+      .times(3)
+      .withf(move |f| {
+        let mut count = call_count_clone.lock().unwrap();
+        *count += 1;
+        match *count {
+          1 => f.get_from_block() == Some(0) && f.get_to_block() == Some(99),
+          2 => f.get_from_block() == Some(100) && f.get_to_block() == Some(199),
+          3 => f.get_from_block() == Some(200) && f.get_to_block() == Some(249),
+          _ => false,
+        }
+      })
+      .returning(|_| Ok(vec![]));
+
+    let mut addresses: HashMap<Address, Sender<Event>> = HashMap::new();
+    addresses.insert(ADDRESS, tokio::sync::mpsc::channel(100).0);
+
+    let poller = PollerBuilder::builder()
+      .with_handler_channels(addresses)
+      .with_poll_interval(Duration::from_millis(100))
+      .with_from_block(Some(0))
+      .with_max_block_range(Some(100))
+      .build(provider);
+
+    // latest_block = 249, last_processes_block = 0, max_block_range = 100
+    // → ranges: (0,99), (100,199), (200,249)
+    poller.chunk_and_poll_logs(249).await.unwrap();
+  }
+
+  // Without max_block_range, query_logs should be called once with the full range.
+  #[tokio::test]
+  async fn test_chunk_and_poll_no_split_without_flag() {
+    let mut provider = MockPollProvider::new();
+
+    provider
+      .expect_get_logs()
+      .times(1)
+      .withf(|f| f.get_from_block() == Some(0) && f.get_to_block() == Some(249))
+      .returning(|_| Ok(vec![]));
+
+    let mut addresses: HashMap<Address, Sender<Event>> = HashMap::new();
+    addresses.insert(ADDRESS, tokio::sync::mpsc::channel(100).0);
+
+    let poller = PollerBuilder::builder()
+      .with_handler_channels(addresses)
+      .with_poll_interval(Duration::from_millis(100))
+      .with_from_block(Some(0))
+      .build(provider);
+
+    poller.chunk_and_poll_logs(249).await.unwrap();
+  }
+
+  // When range <= max_block_range, only one call should be made.
+  #[tokio::test]
+  async fn test_chunk_and_poll_single_range_within_limit() {
+    let mut provider = MockPollProvider::new();
+
+    provider
+      .expect_get_logs()
+      .times(1)
+      .withf(|f| f.get_from_block() == Some(0) && f.get_to_block() == Some(50))
+      .returning(|_| Ok(vec![]));
+
+    let mut addresses: HashMap<Address, Sender<Event>> = HashMap::new();
+    addresses.insert(ADDRESS, tokio::sync::mpsc::channel(100).0);
+
+    let poller = PollerBuilder::builder()
+      .with_handler_channels(addresses)
+      .with_poll_interval(Duration::from_millis(100))
+      .with_from_block(Some(0))
+      .with_max_block_range(Some(100))
+      .build(provider);
+
+    // range (0..50) fits within max_block_range=100 → single call
+    poller.chunk_and_poll_logs(50).await.unwrap();
   }
 }

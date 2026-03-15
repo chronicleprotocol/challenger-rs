@@ -22,7 +22,7 @@ use alloy::{
 use clap::Parser;
 use env_logger::Env;
 use eyre::Result;
-use log::{error, info};
+use log::{error, info, warn};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use metrics_process::Collector;
 use scribe::{
@@ -37,6 +37,16 @@ use tokio_util::sync::CancellationToken;
 
 mod wallet;
 use wallet::{CustomWallet, KeystoreWallet, PrivateKeyWallet};
+
+// Constants for retry backoff configuration
+const RETRY_BACKOFF_MAX_ATTEMPTS: u32 = 15;
+const RETRY_BACKOFF_INITIAL_MS: u64 = 200;
+const RETRY_BACKOFF_MAX_MS: u64 = 300;
+
+// Constants for timing and metrics
+const DEFAULT_METRICS_PORT: &str = "9090";
+const POLL_INTERVAL_SECS: u64 = 30;
+const METRICS_COLLECT_INTERVAL_MS: u64 = 750;
 
 /// CLI interface for the challenger.
 #[derive(Parser, Debug)]
@@ -94,6 +104,12 @@ struct Cli {
 
   #[arg(long, help = "Block number to start from")]
   from_block: Option<u64>,
+
+  #[arg(
+    long,
+    help = "Maximum number of blocks to fetch per RPC request. Splits wide ranges into multiple calls."
+  )]
+  max_block_range: Option<u64>,
 }
 
 impl PrivateKeyWallet for Cli {
@@ -128,19 +144,24 @@ async fn main() -> Result<()> {
 
   let args = Cli::parse();
 
-  log::info!("Using RPC URL: {:?}", &args.rpc_url);
+  info!("Using RPC URL: {:?}", &args.rpc_url);
 
   // Building tx signer for provider
-  let signer = args.wallet()?.unwrap();
+  let signer = args
+    .wallet()?
+    .ok_or_else(|| eyre::eyre!("No wallet credentials provided"))?;
   info!(
     "Using {:?} for signing transactions.",
     signer.default_signer().address()
   );
-  // let nonce_manager = NonceFiller::<SimpleNonceManager>::default();
 
   // Create new HTTP client with retry backoff layer
   let client = ClientBuilder::default()
-    .layer(RetryBackoffLayer::new(15, 200, 300))
+    .layer(RetryBackoffLayer::new(
+      RETRY_BACKOFF_MAX_ATTEMPTS,
+      RETRY_BACKOFF_INITIAL_MS,
+      RETRY_BACKOFF_MAX_MS,
+    ))
     .http(args.rpc_url.parse()?);
 
   let provider = Arc::new(
@@ -158,14 +179,17 @@ async fn main() -> Result<()> {
     Some(url) => {
       // Create new HTTP client for flashbots
       let flashbot_client = ClientBuilder::default()
-        .layer(RetryBackoffLayer::new(15, 200, 300))
+        .layer(RetryBackoffLayer::new(
+          RETRY_BACKOFF_MAX_ATTEMPTS,
+          RETRY_BACKOFF_INITIAL_MS,
+          RETRY_BACKOFF_MAX_MS,
+        ))
         .http(url.parse()?);
 
       Some(Arc::new(
         ProviderBuilder::new()
           // Add chain id request from rpc
           .filler(ChainIdFiller::new(args.chain_id))
-          // .filler(nonce_manager.clone())
           // Add default signer
           .wallet(signer.clone())
           .connect_client(flashbot_client),
@@ -173,26 +197,36 @@ async fn main() -> Result<()> {
     }
   };
 
-  // let signer_lock = Arc::new(Mutex::new(signer));
-
-  let mut set = JoinSet::new();
+  let mut set: JoinSet<Result<()>> = JoinSet::new();
   let cancellation_token = CancellationToken::new();
 
   // Removing duplicates from list of provided addresses
   let mut addresses = args.addresses;
+  addresses.sort();
   addresses.dedup();
   let addresses: Vec<Address> = addresses
     .iter()
-    .map(|a| a.parse().unwrap())
-    .collect::<Vec<_>>();
+    .map(|a| {
+      a.parse::<Address>()
+        .map_err(|e| eyre::eyre!("Invalid address '{}': {}", a, e))
+    })
+    .collect::<Result<Vec<_>, _>>()?;
 
   // Register Prometheus metrics
   let builder = PrometheusBuilder::new();
 
   let port = env::var("HTTP_PORT")
-    .unwrap_or(String::from("9090"))
+    .unwrap_or_else(|_| DEFAULT_METRICS_PORT.to_string())
     .parse::<u16>()
-    .unwrap();
+    .unwrap_or_else(|e| {
+      warn!(
+        "Invalid HTTP_PORT value, using default {}: {}",
+        DEFAULT_METRICS_PORT, e
+      );
+      DEFAULT_METRICS_PORT
+        .parse()
+        .expect("DEFAULT_METRICS_PORT constant is invalid")
+    });
   let addr = SocketAddr::from(([0, 0, 0, 0], port));
 
   builder
@@ -212,8 +246,12 @@ async fn main() -> Result<()> {
   let mut processors: HashMap<Address, Sender<Event>> = HashMap::new();
 
   for address in addresses.iter() {
-    let scribe_contract =
-      ScribeContractInstance::new(*address, provider.clone(), flashbot_provider.clone());
+    let scribe_contract = ScribeContractInstance::new(
+      *address,
+      provider.clone(),
+      flashbot_provider.clone(),
+      signer.default_signer().address(),
+    );
 
     // Create event processor for each address
     let (mut event_processor, tx) =
@@ -221,7 +259,11 @@ async fn main() -> Result<()> {
 
     // Run event distributor process
     set.spawn(async move {
-      event_processor.start().await;
+      if let Err(e) = event_processor.start().await {
+        log::error!("Event processor error: {:#?}", e);
+        return Err(e.into());
+      }
+      Ok(())
     });
 
     // Storing event processor channel to send events to it.
@@ -234,28 +276,32 @@ async fn main() -> Result<()> {
     .with_handler_channels(processors)
     .with_cancellation_token(cancellation_token.clone())
     .with_from_block(args.from_block)
-    .with_poll_interval(Duration::from_secs(30))
+    .with_max_block_range(args.max_block_range)
+    .with_poll_interval(Duration::from_secs(POLL_INTERVAL_SECS))
     .build(EthereumPollProvider::new(provider.clone()));
 
   // Run events poller process
   set.spawn(async move {
     log::info!("Starting events poller");
     if let Err(err) = poller.start().await {
-      log::error!("Poller error: {:?}", err);
+      log::error!("Poller error: {:#?}", err);
+      // Poller failure is critical - return error to trigger shutdown
+      return Err(err.into());
     }
+    Ok(())
   });
 
   // Run metrics collector process
   let metrics_cancelation_token = cancellation_token.clone();
   set.spawn(async move {
-    let duration = Duration::from_millis(750);
+    let duration = Duration::from_millis(METRICS_COLLECT_INTERVAL_MS);
     log::info!("Starting metrics collector");
 
     loop {
       select! {
           _ = metrics_cancelation_token.cancelled() => {
               log::info!("Metrics collector stopped");
-              return;
+              return Ok(());
           },
           _ = sleep(duration) => {
               collector.collect();
@@ -272,13 +318,21 @@ async fn main() -> Result<()> {
 
       // some process terminated, no need to wait for others
       res = set.join_next() => {
-          match res.unwrap() {
-              Ok(_) => {
-                  info!("Task terminated without error, shutting down");
+          match res {
+              Some(Ok(Ok(_))) => {
+                  info!("Task terminated successfully, shutting down");
                   cancellation_token.cancel();
               },
-              Err(e) => {
-                  error!("Task terminated with error: {:#?}", e.to_string());
+              Some(Ok(Err(e))) => {
+                  error!("Task returned error: {:#?}", e);
+                  cancellation_token.cancel();
+              },
+              Some(Err(e)) => {
+                  error!("Task panicked: {:#?}", e.to_string());
+                  cancellation_token.cancel();
+              },
+              None => {
+                  info!("All tasks completed");
               },
           }
       },
@@ -312,6 +366,7 @@ mod tests {
       rpc_url: "http://localhost:8545".to_string(),
       flashbot_rpc_url: Some("http://localhost:8545".to_string()),
       from_block: None,
+      max_block_range: None,
     };
 
     let wallet = cli.wallet().unwrap().unwrap();
@@ -334,6 +389,7 @@ mod tests {
       rpc_url: "http://localhost:8545".to_string(),
       flashbot_rpc_url: Some("http://localhost:8545".to_string()),
       from_block: None,
+      max_block_range: None,
     };
 
     let wallet = cli.wallet().unwrap().unwrap();
@@ -363,6 +419,7 @@ mod tests {
       rpc_url: "http://localhost:8545".to_string(),
       flashbot_rpc_url: Some("http://localhost:8545".to_string()),
       from_block: None,
+      max_block_range: None,
     };
 
     let wallet = cli.wallet().unwrap().unwrap();
@@ -389,6 +446,7 @@ mod tests {
       rpc_url: "http://localhost:8545".to_string(),
       flashbot_rpc_url: Some("http://localhost:8545".to_string()),
       from_block: None,
+      max_block_range: None,
     };
 
     let wallet = cli.wallet().unwrap().unwrap();

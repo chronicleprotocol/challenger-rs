@@ -70,7 +70,7 @@ pub enum ContractError {
     source: TransactionBuilderError<Ethereum>,
   },
 
-  #[error("failed to build transaction for private mempool address {address:?}")]
+  #[error("failed to build transaction envelope for private mempool address {address:?}")]
   PrivateTransactionBuildError { address: Address },
 
   #[error("RPC transport error: {0}")]
@@ -98,9 +98,6 @@ pub enum ProcessorError {
   #[error("RPC transport error: {0}")]
   RpcError(#[from] RpcError<TransportErrorKind>),
 
-  #[error("failed to fetch block with number {0}")]
-  FailedToFetchBlock(u64),
-
   #[error("failed to execute challenge on address {address:?}: {source}")]
   ChallengeError {
     address: Address,
@@ -114,8 +111,8 @@ pub enum ProcessorError {
   #[error("address {address:?} challenge cancelled after attempt: {attempt}")]
   ChallengeCancelled { address: Address, attempt: u16 },
 
-  #[error("missing block number in log for transaction {0:?}")]
-  NoBlockNumberInLog(Option<TxHash>),
+  #[error("challenge period not initialized for address {address:?}")]
+  ChallengePeriodNotInitialized { address: Address },
 }
 
 /// Dynamic event polling result type.
@@ -139,6 +136,9 @@ pub enum PollerError {
 
   #[error(transparent)]
   ContractError(#[from] ContractError),
+
+  #[error("no channel found for address {address:?}")]
+  ChannelNotFound { address: Address },
 }
 
 /// Dynamic event polling result type.
