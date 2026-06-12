@@ -1,0 +1,19 @@
+name: Backfill Sign
+# RFC-044.3 one-time backfill. Signs already-published prod/stage image digests
+# so Kyverno's verify-chronicle-release-images policy accepts them. Remove after use.
+on:
+  workflow_dispatch:
+    inputs:
+      images:
+        description: "Space/newline separated repo@sha256:... digests to sign"
+        type: string
+        required: true
+jobs:
+  backfill:
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+    uses: chronicleprotocol/actions-workflows/.github/workflows/cosign-backfill-sign.yaml@main
+    with:
+      images: ${{ inputs.images }}
