@@ -1,9 +1,15 @@
 name: Sign image (release identity)
 # Self-contained keyless cosign signer embedded in this public repo (RFC-044.4 WS3a).
 # Public repos cannot call the private actions-workflows reusable, so signing runs
-# here. The cosign keyless SAN is this repo's sign-image.yaml@<ref>, which the
-# Kyverno verify-chronicle-release-images attestor is configured to accept. Signs by
-# digest, --recursive (covers the OCI index + per-arch children). Keyless OIDC, no keys.
+# here. The cosign keyless SAN is this repo's sign-image.yaml@refs/heads/main (callers
+# reference it as <repo>/sign-image.yaml@main, and the re-sign dispatch runs on the
+# default branch), which the Kyverno verify-chronicle-release-images attestor accepts.
+# Signs by digest, --recursive (OCI index + per-arch children). Keyless OIDC, no keys.
+#
+# Two modes, selected by which INPUT is set (NOT by github.event_name, which in a
+# workflow_call reusable inherits the caller's trigger and is unreliable):
+#   - refs set         -> re-sign mode: sign each <image>@sha256:<digest> as-is.
+#   - digest+tags set  -> build mode: sign each <tag>@<digest> (from docker build+meta).
 on:
   workflow_call:
     inputs:
@@ -42,22 +48,26 @@ jobs:
 
       - name: Sign and verify
         env:
-          EVENT: ${{ github.event_name }}
           DIGEST: ${{ inputs.digest }}
           TAGS: ${{ inputs.tags }}
           REFS: ${{ inputs.refs }}
           ISSUER: "https://token.actions.githubusercontent.com"
-          IDENTITY: "https://github.com/${{ github.repository }}/.github/workflows/sign-image.yaml@${{ github.ref }}"
+          # Callers reference this workflow as <repo>/sign-image.yaml@main and the
+          # re-sign dispatch runs on the default branch, so the keyless SAN ref is
+          # always refs/heads/main -- which is also the only ref the Kyverno enforce
+          # IVP accepts. Do NOT use github.ref: in a workflow_call run it inherits the
+          # caller's ref (e.g. a release tag) and would not match the @main SAN.
+          IDENTITY: "https://github.com/${{ github.repository }}/.github/workflows/sign-image.yaml@refs/heads/main"
         run: |
           set -euo pipefail
           images=()
-          if [ "${EVENT}" = "workflow_dispatch" ]; then
+          if [ -n "${REFS}" ]; then
             for r in ${REFS}; do
               [ -z "${r}" ] && continue
               [[ "${r}" == *@sha256:* ]] || { echo "bad ref (need <image>@sha256:...): ${r}" >&2; exit 1; }
               images+=("${r}")
             done
-          else
+          elif [ -n "${DIGEST}" ]; then
             [[ "${DIGEST}" == sha256:* ]] || { echo "unexpected digest: ${DIGEST}" >&2; exit 1; }
             resolve_tags() {
               if jq -e 'type == "array"' >/dev/null 2>&1 <<< "${TAGS}"; then
@@ -70,6 +80,8 @@ jobs:
               [ -z "${tag}" ] && continue
               images+=("${tag}@${DIGEST}")
             done < <(resolve_tags)
+          else
+            echo "provide refs (dispatch) or digest+tags (workflow_call)" >&2; exit 1
           fi
           [ "${#images[@]}" -gt 0 ] || { echo "no images to sign" >&2; exit 1; }
           for image in "${images[@]}"; do
