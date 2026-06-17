@@ -1,0 +1,82 @@
+name: Sign image (release identity)
+# Self-contained keyless cosign signer embedded in this public repo (RFC-044.4 WS3a).
+# Public repos cannot call the private actions-workflows reusable, so signing runs
+# here. The cosign keyless SAN is this repo's sign-image.yaml@<ref>, which the
+# Kyverno verify-chronicle-release-images attestor is configured to accept. Signs by
+# digest, --recursive (covers the OCI index + per-arch children). Keyless OIDC, no keys.
+on:
+  workflow_call:
+    inputs:
+      digest:
+        description: "Image digest (sha256:...) from docker/build-push-action"
+        type: string
+        required: true
+      tags:
+        description: "Image tags (newline list or JSON array) from docker/metadata-action"
+        type: string
+        required: true
+  workflow_dispatch:
+    inputs:
+      refs:
+        description: "space-separated <image>@sha256:<digest> to (re)sign"
+        type: string
+        required: true
+permissions: {}
+jobs:
+  sign:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+    steps:
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
+
+      - name: Sign and verify
+        env:
+          EVENT: ${{ github.event_name }}
+          DIGEST: ${{ inputs.digest }}
+          TAGS: ${{ inputs.tags }}
+          REFS: ${{ inputs.refs }}
+          ISSUER: "https://token.actions.githubusercontent.com"
+          IDENTITY: "https://github.com/${{ github.repository }}/.github/workflows/sign-image.yaml@${{ github.ref }}"
+        run: |
+          set -euo pipefail
+          images=()
+          if [ "${EVENT}" = "workflow_dispatch" ]; then
+            for r in ${REFS}; do
+              [ -z "${r}" ] && continue
+              [[ "${r}" == *@sha256:* ]] || { echo "bad ref (need <image>@sha256:...): ${r}" >&2; exit 1; }
+              images+=("${r}")
+            done
+          else
+            [[ "${DIGEST}" == sha256:* ]] || { echo "unexpected digest: ${DIGEST}" >&2; exit 1; }
+            resolve_tags() {
+              if jq -e 'type == "array"' >/dev/null 2>&1 <<< "${TAGS}"; then
+                jq -r '.[]' <<< "${TAGS}"
+              else
+                printf '%s\n' "${TAGS}"
+              fi
+            }
+            while IFS= read -r tag; do
+              [ -z "${tag}" ] && continue
+              images+=("${tag}@${DIGEST}")
+            done < <(resolve_tags)
+          fi
+          [ "${#images[@]}" -gt 0 ] || { echo "no images to sign" >&2; exit 1; }
+          for image in "${images[@]}"; do
+            echo "Signing ${image}"
+            cosign sign --yes --recursive "${image}"
+            cosign verify "${image}" \
+              --certificate-oidc-issuer "${ISSUER}" \
+              --certificate-identity "${IDENTITY}" >/dev/null
+            echo "Signed + verified ${image}"
+          done
