@@ -70,9 +70,10 @@ jobs:
       contents: read
       id-token: write
       packages: write
-    uses: chronicleprotocol/actions-workflows/.github/workflows/cosign-sign-and-verify.yaml@main
+    # Self-signer embedded in this repo. Pinned @main so the cosign keyless SAN is
+    # sign-image.yaml@refs/heads/main (invariant of this tag build), matching the
+    # Kyverno verify-chronicle-release-images enforce identity.
+    uses: chronicleprotocol/challenger-rs/.github/workflows/sign-image.yaml@main
     with:
       digest: ${{ needs.docker-image-alpine.outputs.digest }}
       tags: ${{ needs.docker-image-alpine.outputs.tags }}
-      repository: ${{ github.repository }}
-      ref: ${{ github.ref }}
