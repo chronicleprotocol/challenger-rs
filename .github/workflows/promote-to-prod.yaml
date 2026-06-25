@@ -1,0 +1,307 @@
+# EMBEDDED COPY -- kept in sync manually with the canonical producer at
+# chronicleprotocol/actions-workflows/.github/workflows/promote-to-prod.yaml.
+# challenger-rs is PUBLIC and cannot call the private actions-workflows reusable,
+# so the promote-to-prod VSA producer is embedded here verbatim, exactly as the
+# sign-image.yaml signer is embedded in this repo for the same reason. The cosign
+# keyless SAN therefore becomes
+#   https://github.com/chronicleprotocol/challenger-rs/.github/workflows/promote-to-prod.yaml@refs/heads/main
+# (callers reference <repo>/promote-to-prod.yaml@main on the default branch), which the
+# Kyverno verify-chronicle-promotion-vsa attestor is widened to accept. Do NOT edit the
+# body below: keep it byte-for-byte identical to the canonical workflow and re-sync on change.
+name: Promote to Prod (RFC-044.5 Phase 2 VSA)
+
+# Net-new reusable producer. ADDITIVE: it does not touch the release-signature path
+# (cosign-sign-and-verify.yaml) at all. On a passing gate + a human approval it emits a
+# keyless cosign in-toto SLSA VSA (predicateType https://slsa.dev/verification_summary/v1)
+# asserting verificationResult=PASSED + environment=prod, bound to the image DIGEST and
+# signed by THIS workflow's own keyless identity. That distinct Fulcio SAN
+#   https://github.com/chronicleprotocol/challenger-rs/.github/workflows/promote-to-prod.yaml@refs/heads/main
+# is what the prod-only Kyverno IVP verify-chronicle-promotion-vsa trusts -- independent of
+# the release (cosign-sign-and-verify.yaml) and dev (cosign-sign-dev.yaml) signer SANs, the
+# same tier-by-SAN pattern RFC-044.5 already uses. The SAN is the real environment=prod
+# binding (only this workflow emits this attestation, only on the approved path); the
+# predicate.environment field is a secondary, human-readable marker.
+#
+# Gate (RFC-044.5 Phase 2, approved). The VSA is emitted ONLY when ALL pass AND a reviewer
+# approves, so a scan-fail or no-approval digest can NEVER receive a VSA (the P1 red-path):
+#   - release CI green on the source commit (blocks; best-effort cross-repo, see the step)
+#   - Trivy: fixable CRITICAL CVEs + any embedded secret (blocks)
+#   - Trivy: HIGH + misconfig (report-only, never blocks)
+#   - CycloneDX SBOM (always produced + cosign-attested, never a gate)
+# Human approval is NOT a GitHub Environment gate: chronicleprotocol is on the Team plan and
+# this repo is private, so Environment required-reviewers are unavailable (Enterprise-only for
+# private repos). The human approval of record is the CODEOWNERS-reviewed app-of-apps PR that
+# pins the new prod digest (with the required digest-gate check). The VSA therefore certifies
+# the AUTOMATED gate (tests + Trivy + SBOM); the GitOps PR review is the deploy approval.
+# fail-open is at the Kyverno layer (failurePolicy: Ignore), NOT here: a Trivy/registry
+# error fails the gate and simply withholds the VSA (the image is never falsely promoted).
+
+on:
+  workflow_call:
+    inputs:
+      image:
+        description: "GHCR image repo path, e.g. ghcr.io/chronicleprotocol/spire"
+        type: string
+        required: true
+      digest:
+        description: "Image digest sha256:... returned by docker/build-push-action"
+        type: string
+        required: true
+      tags:
+        description: "Image tags (JSON array or newline list) carried into the VSA; optional"
+        type: string
+        required: false
+      source_repository:
+        description: "Repo that built the image (github.repository), for the release-CI-green check"
+        type: string
+        required: true
+      source_ref:
+        description: "Ref or SHA the image was built from, for the release-CI-green check"
+        type: string
+        required: true
+      allow_unverified_ci:
+        description: "Proceed when the source repo's CI status cannot be READ (e.g. cross-repo dispatch where the token has no access). Default false = fail closed. A resolvable-but-not-green CI always blocks regardless."
+        type: boolean
+        required: false
+        default: false
+  workflow_dispatch:
+    inputs:
+      image:
+        description: "GHCR image repo path, e.g. ghcr.io/chronicleprotocol/spire"
+        type: string
+        required: true
+      digest:
+        description: "Image digest sha256:..."
+        type: string
+        required: true
+      source_repository:
+        description: "Repo that built the image (owner/name)"
+        type: string
+        required: true
+      source_ref:
+        description: "Ref or SHA the image was built from"
+        type: string
+        required: true
+      allow_unverified_ci:
+        description: "Proceed when the source repo's CI status cannot be READ. Default false = fail closed."
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    # Tests + scan. NO environment gate here, so a failing red-path is rejected BEFORE
+    # the human approver is ever prompted. A failure here skips the attest job entirely.
+    if: ${{ inputs.digest != '' && inputs.image != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+      checks: read       # read the source commit's check-runs for the tests-green gate
+      statuses: read     # legacy commit statuses, in case checks are reported there
+    outputs:
+      result: ${{ steps.gate.outputs.result }}
+    steps:
+      - name: Validate digest is pinned (TOCTOU guard)
+        env:
+          DIGEST: ${{ inputs.digest }}
+        run: |
+          set -euo pipefail
+          if [[ "${DIGEST}" != sha256:* ]]; then
+            echo "Refusing to promote a non-digest reference: ${DIGEST}" >&2
+            exit 1
+          fi
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Verify release CI is green on the source commit
+        # "Tests: existing release CI is green. Blocks." Generic + repo-agnostic: resolve
+        # the source ref to a SHA and require every check-run to have concluded success
+        # (neutral/skipped tolerated). Cross-repo reads need token access to source_repository;
+        # if the checks cannot be read (token scope) the step WARNS and defers to the prod
+        # Environment human approval -- it never silently treats unknown as green.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SRC: ${{ inputs.source_repository }}
+          REF: ${{ inputs.source_ref }}
+          ALLOW: ${{ inputs.allow_unverified_ci }}
+        run: |
+          set -euo pipefail
+          # Fail CLOSED when CI status cannot be READ, unless allow_unverified_ci=true (a
+          # knowing cross-repo dispatch where the token has no source-repo access, still
+          # backstopped by the CODEOWNERS GitOps pin-PR review). A resolvable-but-not-green CI
+          # always blocks regardless of the flag.
+          fail_or_defer() {
+            if [[ "${ALLOW}" == "true" ]]; then
+              echo "::warning::$1 -- allow_unverified_ci=true; deferring tests-green to the CODEOWNERS GitOps pin-PR review" >&2
+              exit 0
+            fi
+            echo "::error::$1 -- refusing to promote (set allow_unverified_ci=true to override for cross-repo dispatch)" >&2
+            exit 1
+          }
+          sha="$(gh api "repos/${SRC}/commits/${REF}" --jq '.sha' 2>/dev/null || true)"
+          [[ -z "${sha}" ]] && fail_or_defer "cannot resolve ${SRC}@${REF} (token has no access to that repo?)"
+          runs="$(gh api "repos/${SRC}/commits/${sha}/check-runs?per_page=100" 2>/dev/null || true)"
+          [[ -z "${runs}" ]] && fail_or_defer "cannot read check-runs for ${SRC}@${sha}"
+          total="$(jq '.check_runs | length' <<<"${runs}" 2>/dev/null || echo "")"
+          bad="$(jq '[.check_runs[] | select(.conclusion != null and .conclusion != "success" and .conclusion != "neutral" and .conclusion != "skipped")] | length' <<<"${runs}" 2>/dev/null || echo "")"
+          # Exclude THIS promotion run's own check-runs (the build/sign/attest jobs of the same
+          # release workflow, identified by /runs/<run_id>/ in details_url) from the in-progress
+          # count, so a release-time caller's still-running attest job does not self-block the
+          # gate. total/bad stay unfiltered, so external CI and any genuinely failed check still
+          # count; a cross-repo dispatch's run_id is absent from the source commit, so the filter
+          # is a no-op there.
+          inprog="$(jq --arg rid "${GITHUB_RUN_ID}" '[.check_runs[] | select(.status != "completed") | select(((.details_url // "") | contains("/runs/" + $rid + "/")) | not)] | length' <<<"${runs}" 2>/dev/null || echo "")"
+          { [[ -z "${total}" ]] || [[ -z "${bad}" ]] || [[ -z "${inprog}" ]]; } && fail_or_defer "cannot parse check-runs for ${SRC}@${sha}"
+          # Inconclusive CI (no checks ran, or still running) is deferred when
+          # allow_unverified_ci=true (the GitOps PR review is the backstop); only a
+          # CONCLUSIVELY not-green CI (bad>0) is a hard block regardless of the flag.
+          [[ "${total}" -eq 0 ]] && fail_or_defer "no check-runs on ${SRC}@${sha} (no release CI ran)"
+          [[ "${inprog}" -ne 0 ]] && fail_or_defer "release CI still running on ${SRC}@${sha} (${inprog} incomplete)"
+          if [[ "${bad}" -ne 0 ]]; then
+            echo "Release CI not green on ${SRC}@${sha} (${bad} non-success checks); refusing to promote" >&2
+            exit 1
+          fi
+          echo "Release CI green on ${SRC}@${sha} (${total} checks, all success/neutral/skipped)"
+
+      - name: Trivy gate (block fixable CRITICAL CVEs + embedded secrets)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ inputs.image }}@${{ inputs.digest }}
+          scanners: vuln,secret
+          severity: CRITICAL
+          ignore-unfixed: true
+          vuln-type: os,library
+          exit-code: '1'
+          format: table
+          timeout: 10m
+        env:
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ github.token }}
+
+      - name: Trivy report (HIGH + misconfig -- never blocks)
+        if: always()
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ inputs.image }}@${{ inputs.digest }}
+          scanners: vuln,misconfig
+          severity: HIGH
+          ignore-unfixed: false
+          exit-code: '0'
+          format: table
+        env:
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ github.token }}
+
+      - id: gate
+        run: echo "result=PASSED" >> "$GITHUB_OUTPUT"
+
+  attest:
+    needs: gate
+    if: ${{ needs.gate.outputs.result == 'PASSED' }}
+    # Emits the VSA automatically once the automated gate passes. There is NO GitHub
+    # Environment approval gate here: Environment required-reviewers are unavailable on this
+    # private repo under the org's Team plan (Enterprise-only). The human approval of record
+    # is the downstream CODEOWNERS-reviewed app-of-apps PR that pins this digest into prod
+    # (with the required digest-gate check); the VSA certifies the AUTOMATED gate (tests +
+    # Trivy + SBOM) only. A future Enterprise upgrade can re-add `environment: prod` here.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+    steps:
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
+
+      - name: Generate CycloneDX SBOM (attested below; never a gate)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ inputs.image }}@${{ inputs.digest }}
+          format: cyclonedx
+          output: sbom.cdx.json
+          exit-code: '0'
+        env:
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ github.token }}
+
+      - name: Build SLSA VSA predicate
+        env:
+          IMAGE: ${{ inputs.image }}@${{ inputs.digest }}
+          DIGEST: ${{ inputs.digest }}
+          SRC_REPO: ${{ inputs.source_repository }}
+          SRC_REF: ${{ inputs.source_ref }}
+        run: |
+          set -euo pipefail
+          if [[ "${DIGEST}" != sha256:* ]]; then
+            echo "Refusing to attest a non-digest reference: ${DIGEST}" >&2
+            exit 1
+          fi
+          # vsa.json is the PREDICATE ONLY; cosign injects _type/subject/predicateType
+          # when --type + --predicate are used. verifiedLevels is intentionally empty
+          # (a SLSA build-provenance level is a separate, deferred phase; do not over-claim).
+          cat > vsa.json <<EOF
+          {
+            "verifier": {"id": "https://github.com/chronicleprotocol/challenger-rs/.github/workflows/promote-to-prod.yaml@refs/heads/main"},
+            "timeVerified": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "resourceUri": "${IMAGE}",
+            "policy": {"uri": "https://github.com/chronicleprotocol/challenger-rs/blob/main/.github/workflows/promote-to-prod.yaml"},
+            "verificationResult": "PASSED",
+            "verifiedLevels": [],
+            "environment": "prod",
+            "inputAttestations": [{"uri": "${SRC_REPO}", "annotations": {"sourceRef": "${SRC_REF}"}}]
+          }
+          EOF
+          echo "VSA predicate:"
+          cat vsa.json
+
+      - name: Attest VSA (keyless, bound to digest)
+        env:
+          IMAGE: ${{ inputs.image }}@${{ inputs.digest }}
+        run: |
+          set -euo pipefail
+          cosign attest --yes \
+            --type "https://slsa.dev/verification_summary/v1" \
+            --predicate vsa.json \
+            "${IMAGE}"
+
+      - name: Attest SBOM (keyless; produced not gated; the IVP does not require it)
+        env:
+          IMAGE: ${{ inputs.image }}@${{ inputs.digest }}
+        run: |
+          set -euo pipefail
+          cosign attest --yes \
+            --type cyclonedx \
+            --predicate sbom.cdx.json \
+            "${IMAGE}"
+
+      - name: Self-verify the VSA (proves the Kyverno IVP will accept it)
+        env:
+          IMAGE: ${{ inputs.image }}@${{ inputs.digest }}
+        run: |
+          set -euo pipefail
+          cosign verify-attestation \
+            --type "https://slsa.dev/verification_summary/v1" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            --certificate-identity-regexp "^https://github\.com/chronicleprotocol/challenger-rs/\.github/workflows/promote-to-prod\.yaml@refs/heads/main$" \
+            "${IMAGE}" >/dev/null
+          echo "VSA verified for ${IMAGE}"
