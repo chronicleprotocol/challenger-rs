@@ -15,7 +15,7 @@ name: Promote to Prod (RFC-044.5 Phase 2 VSA)
 # keyless cosign in-toto SLSA VSA (predicateType https://slsa.dev/verification_summary/v1)
 # asserting verificationResult=PASSED + environment=prod, bound to the image DIGEST and
 # signed by THIS workflow's own keyless identity. That distinct Fulcio SAN
-#   https://github.com/chronicleprotocol/actions-workflows/.github/workflows/promote-to-prod.yaml@refs/heads/main
+#   https://github.com/chronicleprotocol/challenger-rs/.github/workflows/promote-to-prod.yaml@refs/heads/main
 # is what the prod-only Kyverno IVP verify-chronicle-promotion-vsa trusts -- independent of
 # the release (cosign-sign-and-verify.yaml) and dev (cosign-sign-dev.yaml) signer SANs, the
 # same tier-by-SAN pattern RFC-044.5 already uses. The SAN is the real environment=prod
@@ -261,10 +261,10 @@ jobs:
           # (a SLSA build-provenance level is a separate, deferred phase; do not over-claim).
           cat > vsa.json <<EOF
           {
-            "verifier": {"id": "https://github.com/chronicleprotocol/actions-workflows/.github/workflows/promote-to-prod.yaml@refs/heads/main"},
+            "verifier": {"id": "https://github.com/chronicleprotocol/challenger-rs/.github/workflows/promote-to-prod.yaml@refs/heads/main"},
             "timeVerified": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
             "resourceUri": "${IMAGE}",
-            "policy": {"uri": "https://github.com/chronicleprotocol/actions-workflows/blob/main/.github/workflows/promote-to-prod.yaml"},
+            "policy": {"uri": "https://github.com/chronicleprotocol/challenger-rs/blob/main/.github/workflows/promote-to-prod.yaml"},
             "verificationResult": "PASSED",
             "verifiedLevels": [],
             "environment": "prod",
@@ -302,6 +302,6 @@ jobs:
           cosign verify-attestation \
             --type "https://slsa.dev/verification_summary/v1" \
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-            --certificate-identity-regexp "^https://github\.com/chronicleprotocol/actions-workflows/\.github/workflows/promote-to-prod\.yaml@refs/heads/main$" \
+            --certificate-identity-regexp "^https://github\.com/chronicleprotocol/challenger-rs/\.github/workflows/promote-to-prod\.yaml@refs/heads/main$" \
             "${IMAGE}" >/dev/null
           echo "VSA verified for ${IMAGE}"
