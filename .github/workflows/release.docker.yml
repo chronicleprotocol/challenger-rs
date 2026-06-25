@@ -77,3 +77,25 @@ jobs:
     with:
       digest: ${{ needs.docker-image-alpine.outputs.digest }}
       tags: ${{ needs.docker-image-alpine.outputs.tags }}
+
+  attest_promotion_vsa:
+    name: Promote-to-prod VSA
+    needs: docker-image-alpine
+    if: ${{ startsWith(github.ref, 'refs/tags/') && needs.docker-image-alpine.outputs.digest != '' }}
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+      checks: read
+      statuses: read
+    # Self-contained promote-to-prod VSA producer embedded in this repo (RFC-044.5 P4).
+    # Pinned @main so the cosign keyless SAN is promote-to-prod.yaml@refs/heads/main,
+    # which the Kyverno verify-chronicle-promotion-vsa attestor is widened to accept.
+    uses: chronicleprotocol/challenger-rs/.github/workflows/promote-to-prod.yaml@main
+    with:
+      image: ghcr.io/chronicleprotocol/challenger
+      digest: ${{ needs.docker-image-alpine.outputs.digest }}
+      tags: ${{ needs.docker-image-alpine.outputs.tags }}
+      source_repository: ${{ github.repository }}
+      source_ref: ${{ github.ref }}
+      allow_unverified_ci: true
