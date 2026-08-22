@@ -309,7 +309,11 @@ jobs:
           IMAGE: ${{ inputs.image }}@${{ inputs.digest }}
         run: |
           set -euo pipefail
+          # --new-bundle-format=false: read the legacy .att layout the VSA above uses
+          # (default discovery prefers new-format bundles when any exist). Mirrors the
+          # canonical actions-workflows promote-to-prod.yaml.
           cosign verify-attestation \
+            --new-bundle-format=false \
             --type "https://slsa.dev/verification_summary/v1" \
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
             --certificate-identity-regexp "^https://github\.com/chronicleprotocol/challenger-rs/\.github/workflows/promote-to-prod\.yaml@refs/heads/main$" \
