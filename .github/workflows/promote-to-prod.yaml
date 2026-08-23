@@ -283,13 +283,9 @@ jobs:
           IMAGE: ${{ inputs.image }}@${{ inputs.digest }}
         run: |
           set -euo pipefail
-          # LEGACY storage format on purpose (2026-08-22, sc-19163): Kyverno cannot read
-          # cosign v3 new-bundle-format attestations on registries without the OCI Referrers
-          # API (ghcr has none) -- kyverno#16678. Mirrors the canonical actions-workflows
-          # promote-to-prod.yaml; keep byte-parallel with it. Tlog upload stays ON (required).
+          # Default (new bundle) format; the 2026-08-22 legacy detour was reverted after
+          # live canary evidence (mirrors canonical actions-workflows promote-to-prod.yaml).
           cosign attest --yes \
-            --new-bundle-format=false \
-            --use-signing-config=false \
             --type "https://slsa.dev/verification_summary/v1" \
             --predicate vsa.json \
             "${IMAGE}"
@@ -309,11 +305,7 @@ jobs:
           IMAGE: ${{ inputs.image }}@${{ inputs.digest }}
         run: |
           set -euo pipefail
-          # --new-bundle-format=false: read the legacy .att layout the VSA above uses
-          # (default discovery prefers new-format bundles when any exist). Mirrors the
-          # canonical actions-workflows promote-to-prod.yaml.
           cosign verify-attestation \
-            --new-bundle-format=false \
             --type "https://slsa.dev/verification_summary/v1" \
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
             --certificate-identity-regexp "^https://github\.com/chronicleprotocol/challenger-rs/\.github/workflows/promote-to-prod\.yaml@refs/heads/main$" \
