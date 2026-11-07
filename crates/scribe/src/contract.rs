@@ -127,7 +127,15 @@ impl<P: Provider> ScribeContractInstance<P> {
       current_timestamp
     );
 
-    Ok(current_timestamp - event_timestamp > challenge_period)
+    // Use `saturating_sub`: if the poke's block timestamp is ahead of the
+    // challenger's local clock (clock skew, or a block producer / L2 sequencer
+    // timestamp in the future), `current_timestamp - event_timestamp` would
+    // underflow this u64 subtraction. In release builds that wraps to a huge
+    // value that is always `> challenge_period`, so a brand-new poke would be
+    // wrongly treated as stale and never challenged; in debug builds it panics.
+    // A future-dated event has age 0, i.e. it is not stale.
+    let age = current_timestamp.saturating_sub(event_timestamp);
+    Ok(age > challenge_period)
   }
 
   // Gets the timestamp from the block by `event.log.block_number`, if it is missing, returns an error
@@ -411,6 +419,31 @@ mod tests {
     assert!(
       contract.is_log_stale(&log, challenge_period).await.unwrap(),
       "Event one second past challenge period should be stale"
+    );
+  }
+
+  #[tokio::test]
+  async fn test_is_log_stale_future_event_timestamp_not_stale() {
+    let provider = new_provider("http://localhost:8545");
+    let contract =
+      ScribeContractInstance::new(Address::random(), provider.clone(), None, Address::ZERO);
+
+    // Block timestamp AHEAD of the challenger's local clock (clock skew, or a
+    // producer / L2 sequencer timestamp in the future). Before the
+    // `saturating_sub` fix this underflowed `current_timestamp - event_timestamp`,
+    // wrapping to a huge u64 that is always `> challenge_period`, so a brand-new
+    // poke was wrongly marked stale and never challenged (and panicked in debug
+    // builds). A future-dated event must be treated as fresh, not stale.
+    let now = chrono::Utc::now().timestamp() as u64;
+    let log = Log {
+      block_number: Some(1),
+      block_timestamp: Some(now + 60),
+      ..Default::default()
+    };
+
+    assert!(
+      !contract.is_log_stale(&log, 100).await.unwrap(),
+      "A future-dated event must not be treated as stale"
     );
   }
 
